@@ -45,28 +45,28 @@ object GraphXHelper {
 
     def union(that:Graph[VD, ED]): Graph[VD, ED] = Graph(g.triplets.union(that.triplets))
 
-    def egoNet(s: VertexId, n:Int): Graph[VD, ED] = {
-      val initialMsg = Int.MinValue
-      val newv = g.vertices.map(v => (v._1, (v._2, -1)))
-      val pregelg = org.apache.spark.graphx.Graph[(VD, Int), ED](newv, g.edges)
+    def egoNet(s: VertexId, n:Long): Graph[VD, ED] = {
+      val initialMsg = Long.MinValue
+      val newv = g.vertices.map(v => (v._1, (v._2, -1.toLong)))
+      val pregelg = org.apache.spark.graphx.Graph[(VD, Long), ED](newv, g.edges)
 
-      def vprog(v: VertexId, value: (VD, Int), message: Int): (VD, Int) = {
+      def vprog(v: VertexId, value: (VD, Long), message: Long): (VD, Long) = {
         if (v == s) (value._1, n)
         else (value._1, message)
       }
 
-      def sendMsg(triplet: EdgeTriplet[(VD, Int), ED]): Iterator[(VertexId, Int)] = {
+      def sendMsg(triplet: EdgeTriplet[(VD, Long), ED]): Iterator[(VertexId, Long)] = {
         val dstVertexId = triplet.dstId
         val srcVal = triplet.srcAttr._2
         val dstVal = triplet.dstAttr._2
 
         if ((srcVal > 0) && (dstVertexId != s) && (dstVal < 0))
-          Iterator[(VertexId, Int)]((dstVertexId, srcVal - 1))
+          Iterator[(VertexId, Long)]((dstVertexId, srcVal - 1))
         else
           Iterator.empty
       }
 
-      def mergeMsg(m1: Int, m2: Int) = m1.max(m2)
+      def mergeMsg(m1: Long, m2: Long) = m1.max(m2)
 
       val pregelRun = pregelg.pregel(initialMsg)(vprog, sendMsg, mergeMsg)
       val pregelSub = pregelRun.subgraph(vpred = (_, vattr) => vattr._2 > 0)
@@ -100,18 +100,26 @@ object GraphXHelper {
     }
   }
 
+  implicit class NextLongN(r: scala.util.Random) {
+    def nextLong(n:Long): Long = {
+      val RAND_MAX = Long.MaxValue    // 2^63-1
+      val x = Math.abs(r.nextLong)    // [0, 2^63)
+      if (x < (RAND_MAX - (RAND_MAX % n) )) x % n else nextLong(n)
+    }
+  }
   implicit class SmallGraphs(sc: SparkContext) {
-    private def makeNodesFrom(r:Seq[Int]) : RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v.toLong, ())))
-    private def makeNodes(n:Int) : RDD[(VertexId, Unit)] = makeNodesFrom(0.until(n))
+    private def makeNodesFrom(r:Seq[Long]) : RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v, ())))
+    private def makeNodes(n:Long) : RDD[(VertexId, Unit)] = makeNodesFrom(0L.until(n))
 
-    private def makeEdgesFrom(s:Seq[(Int, Int)]): RDD[Edge[Unit]] =
+    private def makeEdgesFrom(s:Seq[(Long, Long)]): RDD[Edge[Unit]] =
       sc.parallelize(s.map(e => Edge(e._1, e._2, ())))
+
     private val r = new scala.util.Random
 
     @tailrec
-    private def genNPairs(nPairs:Int, maxVal:Int, ordered:Boolean = false, pairs:Set[(Int, Int)] = Set[(Int, Int)]()) : Seq[(Int, Int)] = {
-      def genPair(n: Int, ordered:Boolean = false): (Int, Int) = {
-        val (x, y) = (r.nextInt(n), r.nextInt(n))
+    private def genNPairs(nPairs:Long, maxVal:Long, ordered:Boolean = false, pairs:Set[(Long, Long)] = Set[(Long, Long)]()) : Seq[(Long, Long)] = {
+      def genPair(n: Long, ordered:Boolean = false): (Long, Long) = {
+        val (x, y) = (r.nextLong(n), r.nextLong(n))
         if (x == y) genPair(n)
         else if (ordered && (y < x)) (y, x) else (x, y)
       }
@@ -120,15 +128,15 @@ object GraphXHelper {
       else genNPairs(nPairs, maxVal, ordered, pairs + genPair(maxVal, ordered))
     }
 
-    def circleDiGraph(n:Int): Graph[Unit, Unit] = {
-      val r = 0.until(n)
+    def circleDiGraph(n:Long): Graph[Unit, Unit] = {
+      val r = 0L.until(n)
       val nodes = makeNodes(n)
       val edges : RDD[Edge[Unit]] = sc.parallelize(r.map(n => Edge(n, r.start + (n-r.start +1) % r.length, ())))
       Graph(nodes, edges)
     }
 
-    def pathDiGraph(n:Int): Graph[Unit, Unit] = {
-      val r = 0.until(n)
+    def pathDiGraph(n:Long): Graph[Unit, Unit] = {
+      val r = 0L.until(n)
       val rLen = r.length - 1
       val nodes = makeNodes(n)
       val edges: RDD[Edge[Unit]] = sc.parallelize(0.until(rLen).map(i => Edge(r(i), r(i+1), ())))
@@ -136,7 +144,7 @@ object GraphXHelper {
     }
 
 
-    def wheelDiGraph(n:Int): Graph[Unit, Unit] = {
+    def wheelDiGraph(n:Long): Graph[Unit, Unit] = {
       val wheel = circleDiGraph(n-1)
       val nodes = makeNodes(n)
       val spokes: RDD[Edge[Unit]] = wheel.vertices.map(v => Edge(n - 1, v._1))
@@ -145,30 +153,29 @@ object GraphXHelper {
     }
 
     def houseDiGraph: Graph[Unit, Unit] = {
-      val e = List((0, 1), (0, 2), (1, 3), (2, 3), (2, 4), (3, 4))
+      val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 3), (2, 4), (3, 4))
       val edges = makeEdgesFrom(e)
       val nodes = makeNodes(5)
       Graph(nodes, edges)
     }
 
-    def randomDiGraph(nv:Int, ne:Int, edgeVal:Int = 1): Graph[Unit, Unit] = {
-      assert(ne.toLong <= (nv.toLong *(nv-1)), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) + ")")
+    def randomDiGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
+      assert(ne <= nv *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) + ")")
       val nodes = makeNodes(nv)
       val pairs = genNPairs(ne, nv).map(p => Edge(p._1, p._2, ()))
       Graph(nodes, sc.parallelize(pairs))
     }
 
-    def randomGraph(nv:Int, ne:Int, edgeVal:Int = 1): Graph[Unit, Unit] = {
-      assert(ne.toLong <= nv.toLong / 2 *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) / 2 + ")")
+    def randomGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
+      assert(ne <= nv / 2 *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) / 2 + ")")
       val nodes = makeNodes(nv)
       val pairs = genNPairs(ne, nv, ordered=true).flatMap(p => Seq(Edge(p._1, p._2, ()), Edge(p._2, p._1, ())))
       Graph(nodes, sc.parallelize(pairs))
     }
 
-
-    def pathGraph(n:Int): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
-    def circleGraph(n:Int): Graph[Unit, Unit] = circleDiGraph(n).toUndirected
-    def wheelGraph(n:Int): Graph[Unit, Unit] = wheelDiGraph(n).toUndirected
+    def pathGraph(n:Long): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
+    def circleGraph(n:Long): Graph[Unit, Unit] = circleDiGraph(n).toUndirected
+    def wheelGraph(n:Long): Graph[Unit, Unit] = wheelDiGraph(n).toUndirected
     def houseGraph: Graph[Unit, Unit] = houseDiGraph.toUndirected
   }
 }
