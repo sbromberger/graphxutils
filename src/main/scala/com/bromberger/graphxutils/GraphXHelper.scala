@@ -120,7 +120,7 @@ object GraphXHelper {
       else genNPairs(nPairs, maxVal, ordered, pairs + genPair(maxVal, ordered))
     }
 
-    def circleDiGraph(n:Int): Graph[Int, Int] = {
+    def cycleDiGraph(n:Int): Graph[Int, Int] = {
       val r = 0.until(n)
       val nodes = makeNodes(n)
       val edges : RDD[Edge[Int]] = sc.parallelize(r.map(n => Edge(n, r.start + (n-r.start +1) % r.length, 1)))
@@ -137,7 +137,7 @@ object GraphXHelper {
 
 
     def wheelDiGraph(n:Int): Graph[Int, Int] = {
-      val wheel = circleDiGraph(n-1)
+      val wheel = cycleDiGraph(n-1)
       val nodes = makeNodes(n)
       val spokes: RDD[Edge[Int]] = wheel.vertices.map(v => Edge(n - 1, v._1))
       val edges: RDD[Edge[Int]] = wheel.edges.union(spokes).map(e => Edge((e.srcId + 1) % n, (e.dstId + 1) % n, 1))
@@ -151,6 +151,20 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
+    def starDiGraph(n:Int): Graph[Int, Int] = {
+      val nodes = makeNodes(n)
+      val edges = 1.until(n).map(v => Edge(0, v, 1))
+      Graph(nodes, sc.parallelize(edges))
+    }
+
+    def binaryTreeDiGraph(depth:Int): Graph[Int, Int] = {
+      def edgesFromRootAtDepth(v:VertexId, d:Int) = {
+        return List(Edge(v, )
+      }
+      val nodes = Math.pow(2, depth).toInt - 1
+      val edges =
+
+    }
     def randomDiGraph(nv:Int, ne:Int, edgeVal:Int = 1): Graph[Int, Int] = {
       assert(ne.toLong <= (nv.toLong *(nv-1)), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) + ")")
       val nodes = makeNodes(nv)
@@ -166,10 +180,15 @@ object GraphXHelper {
       Graph(nodes, sc.parallelize(pairs))
     }
 
-
+    def completeGraph(n:Int) = {
+      val nodes = makeNodes(n)
+      val edges = 0.until(n).flatMap(i => 0.until(n).filter(j=> j != i).map(j => (i, j))).map(p=> Edge(p._1, p._2, 1))
+      Graph(nodes, sc.parallelize(edges))
+    }
     def pathGraph(n:Int): Graph[Int, Int] = pathDiGraph(n).toUndirected
-    def circleGraph(n:Int): Graph[Int, Int] = circleDiGraph(n).toUndirected
+    def cycleGraph(n:Int): Graph[Int, Int] = cycleDiGraph(n).toUndirected
     def wheelGraph(n:Int): Graph[Int, Int] = wheelDiGraph(n).toUndirected
     def houseGraph: Graph[Int, Int] = houseDiGraph.toUndirected
+    def starGraph(n:Int): Graph[Int, Int] = starDiGraph(n).toUndirected
   }
 }
