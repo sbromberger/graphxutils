@@ -15,7 +15,7 @@ import scala.reflect.ClassTag
 object GraphXHelper {
   implicit class EdgeAdditions[ED:ClassTag](e: Edge[ED]) {
     def reverse(xform: ED => ED): Edge[ED] = Edge(e.dstId , e.srcId, xform(e.attr))
-    def reverse: Edge[ED] = reverse(identity[ED])
+    def reverse: Edge[VD] = reverse(identity[ED])
   }
 
   implicit class GraphXAdditions[VD:ClassTag, ED:ClassTag](g: Graph[VD, ED]) extends Serializable {
