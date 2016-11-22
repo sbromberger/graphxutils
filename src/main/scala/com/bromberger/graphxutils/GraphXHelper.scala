@@ -1,6 +1,6 @@
 package com.bromberger.graphxutils
 
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.SparkContext
 import org.apache.spark.graphx._
 import org.apache.spark.rdd.RDD
 
@@ -101,11 +101,11 @@ object GraphXHelper {
   }
 
   implicit class SmallGraphs(sc: SparkContext) {
-    private def makeNodesFrom(r:Seq[Int]) : RDD[(VertexId, Int)] = sc.parallelize(r.map(v => (v.toLong, v)))
-    private def makeNodes(n:Int) : RDD[(VertexId, Int)] = makeNodesFrom(0.until(n))
+    private def makeNodesFrom(r:Seq[Int]) : RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v.toLong, ())))
+    private def makeNodes(n:Int) : RDD[(VertexId, Unit)] = makeNodesFrom(0.until(n))
 
-    private def makeEdgesFrom(s:Seq[(Int, Int)], v:Int = 1): RDD[Edge[Int]] =
-      sc.parallelize(s.map(e => Edge(e._1, e._2, v)))
+    private def makeEdgesFrom(s:Seq[(Int, Int)]): RDD[Edge[Unit]] =
+      sc.parallelize(s.map(e => Edge(e._1, e._2, ())))
     private val r = new scala.util.Random
 
     @tailrec
@@ -120,56 +120,55 @@ object GraphXHelper {
       else genNPairs(nPairs, maxVal, ordered, pairs + genPair(maxVal, ordered))
     }
 
-    def circleDiGraph(n:Int): Graph[Int, Int] = {
+    def circleDiGraph(n:Int): Graph[Unit, Unit] = {
       val r = 0.until(n)
       val nodes = makeNodes(n)
-      val edges : RDD[Edge[Int]] = sc.parallelize(r.map(n => Edge(n, r.start + (n-r.start +1) % r.length, 1)))
+      val edges : RDD[Edge[Unit]] = sc.parallelize(r.map(n => Edge(n, r.start + (n-r.start +1) % r.length, ())))
       Graph(nodes, edges)
     }
 
-    def pathDiGraph(n:Int): Graph[Int, Int] = {
+    def pathDiGraph(n:Int): Graph[Unit, Unit] = {
       val r = 0.until(n)
       val rLen = r.length - 1
       val nodes = makeNodes(n)
-      val edges: RDD[Edge[Int]] = sc.parallelize(0.until(rLen).map(i => Edge(r(i), r(i+1), 1)))
+      val edges: RDD[Edge[Unit]] = sc.parallelize(0.until(rLen).map(i => Edge(r(i), r(i+1), ())))
       Graph(nodes, edges)
     }
 
 
-    def wheelDiGraph(n:Int): Graph[Int, Int] = {
+    def wheelDiGraph(n:Int): Graph[Unit, Unit] = {
       val wheel = circleDiGraph(n-1)
       val nodes = makeNodes(n)
-      val spokes: RDD[Edge[Int]] = wheel.vertices.map(v => Edge(n - 1, v._1))
-      val edges: RDD[Edge[Int]] = wheel.edges.union(spokes).map(e => Edge((e.srcId + 1) % n, (e.dstId + 1) % n, 1))
+      val spokes: RDD[Edge[Unit]] = wheel.vertices.map(v => Edge(n - 1, v._1))
+      val edges: RDD[Edge[Unit]] = wheel.edges.union(spokes).map(e => Edge((e.srcId + 1) % n, (e.dstId + 1) % n))
       Graph(nodes, edges)
     }
 
-    def houseDiGraph: Graph[Int, Int] = {
+    def houseDiGraph: Graph[Unit, Unit] = {
       val e = List((0, 1), (0, 2), (1, 3), (2, 3), (2, 4), (3, 4))
       val edges = makeEdgesFrom(e)
       val nodes = makeNodes(5)
       Graph(nodes, edges)
     }
 
-    def randomDiGraph(nv:Int, ne:Int, edgeVal:Int = 1): Graph[Int, Int] = {
+    def randomDiGraph(nv:Int, ne:Int, edgeVal:Int = 1): Graph[Unit, Unit] = {
       assert(ne.toLong <= (nv.toLong *(nv-1)), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) + ")")
       val nodes = makeNodes(nv)
-      val pairs = genNPairs(ne, nv).map(p => Edge(p._1, p._2, edgeVal))
+      val pairs = genNPairs(ne, nv).map(p => Edge(p._1, p._2, ()))
       Graph(nodes, sc.parallelize(pairs))
     }
 
-    def randomGraph(nv:Int, ne:Int, edgeVal:Int = 1): Graph[Int, Int] = {
+    def randomGraph(nv:Int, ne:Int, edgeVal:Int = 1): Graph[Unit, Unit] = {
       assert(ne.toLong <= nv.toLong / 2 *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) / 2 + ")")
       val nodes = makeNodes(nv)
-      val pairs = genNPairs(ne, nv, ordered=true).flatMap(p => Seq(Edge(p._1, p._2, edgeVal), Edge(p._2, p._1, edgeVal)))
-      println("pairs length = " + pairs.length)
+      val pairs = genNPairs(ne, nv, ordered=true).flatMap(p => Seq(Edge(p._1, p._2, ()), Edge(p._2, p._1, ())))
       Graph(nodes, sc.parallelize(pairs))
     }
 
 
-    def pathGraph(n:Int): Graph[Int, Int] = pathDiGraph(n).toUndirected
-    def circleGraph(n:Int): Graph[Int, Int] = circleDiGraph(n).toUndirected
-    def wheelGraph(n:Int): Graph[Int, Int] = wheelDiGraph(n).toUndirected
-    def houseGraph: Graph[Int, Int] = houseDiGraph.toUndirected
+    def pathGraph(n:Int): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
+    def circleGraph(n:Int): Graph[Unit, Unit] = circleDiGraph(n).toUndirected
+    def wheelGraph(n:Int): Graph[Unit, Unit] = wheelDiGraph(n).toUndirected
+    def houseGraph: Graph[Unit, Unit] = houseDiGraph.toUndirected
   }
 }
