@@ -72,6 +72,32 @@ object GraphXHelper {
       val pregelSub = pregelRun.subgraph(vpred = (_, vattr) => vattr._2 > 0)
       org.apache.spark.graphx.Graph[VD, ED](pregelSub.vertices.map(v => (v._1, v._2._1)), pregelSub.edges)
     }
+
+    def gDistances(s: VertexId): RDD[(VertexId, Long)] = {
+      val initialMsg = -1.toLong
+      val newv = g.vertices.map(v => (v._1, (v._2, initialMsg)))
+      val pregelg = org.apache.spark.graphx.Graph[(VD, Long), ED](newv, g.edges)
+
+      def vprog(v:VertexId, value: (VD, Long), message: Long): (VD, Long) = {
+        if (v == s) (value._1, 0.toLong)
+        else (value._1, message)
+      }
+
+      def sendMsg(triplet: EdgeTriplet[(VD, Long), ED]): Iterator[(VertexId, Long)] = {
+        val dstVertexId = triplet.dstId
+        val srcVal = triplet.srcAttr._2
+        val dstVal = triplet.dstAttr._2
+
+        if ((srcVal != initialMsg) && ((dstVal == initialMsg) || (dstVal > srcVal + 1)))
+          Iterator[(VertexId, Long)]((dstVertexId, srcVal + 1))
+        else Iterator.empty
+      }
+
+      def mergeMsg(m1: Long, m2: Long) = m1.min(m2)
+
+      val pregelRun = pregelg.pregel(initialMsg)(vprog, sendMsg, mergeMsg)
+      pregelRun.vertices.map(v => v._1 -> v._2._2)
+    }
   }
 
   implicit class SmallGraphs(sc: SparkContext) {
@@ -103,7 +129,7 @@ object GraphXHelper {
 
     def pathDiGraph(n:Int): Graph[Int, Int] = {
       val r = 0.until(n)
-      val rLen = r.length
+      val rLen = r.length - 1
       val nodes = makeNodes(n)
       val edges: RDD[Edge[Int]] = sc.parallelize(0.until(rLen).map(i => Edge(r(i), r(i+1), 1)))
       Graph(nodes, edges)
