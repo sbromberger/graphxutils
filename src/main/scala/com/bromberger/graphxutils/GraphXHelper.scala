@@ -74,12 +74,12 @@ object GraphXHelper {
     }
 
     def gDistances(s: VertexId): RDD[(VertexId, Long)] = {
-      val initialMsg = -1.toLong
+      val initialMsg = -1L
       val newv = g.vertices.map(v => (v._1, (v._2, initialMsg)))
       val pregelg = org.apache.spark.graphx.Graph[(VD, Long), ED](newv, g.edges)
 
       def vprog(v:VertexId, value: (VD, Long), message: Long): (VD, Long) = {
-        if (v == s) (value._1, 0.toLong)
+        if (v == s) (value._1, 0L)
         else (value._1, message)
       }
 
@@ -103,7 +103,7 @@ object GraphXHelper {
   implicit class NextLongN(r: scala.util.Random) {
     def nextLong(n:Long): Long = {
       val RAND_MAX = Long.MaxValue    // 2^63-1
-      val x = Math.abs(r.nextLong)    // [0, 2^63)
+      val x = r.nextLong >>> 1    // [0, 2^63), strip the sign bit
       if (x < (RAND_MAX - (RAND_MAX % n) )) x % n else nextLong(n)
     }
   }
