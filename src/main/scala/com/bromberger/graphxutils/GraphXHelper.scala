@@ -103,7 +103,7 @@ object GraphXHelper {
   implicit class NextLongN(r: scala.util.Random) {
     def nextLong(n:Long): Long = {
       if (n <= 0) throw new java.lang.IllegalArgumentException("bound must be positive")
-      if (n <= Int.MaxValue) r.nextInt(n.toInt)
+      if (n <= Int.MaxValue) r.nextInt(n.toInt).toLong
       else {
         val RAND_MAX = Long.MaxValue
         // 2^63-1
