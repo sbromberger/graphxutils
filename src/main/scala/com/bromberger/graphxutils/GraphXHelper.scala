@@ -102,9 +102,14 @@ object GraphXHelper {
 
   implicit class NextLongN(r: scala.util.Random) {
     def nextLong(n:Long): Long = {
-      val RAND_MAX = Long.MaxValue    // 2^63-1
-      val x = r.nextLong >>> 1    // [0, 2^63), strip the sign bit
-      if (x < (RAND_MAX - (RAND_MAX % n) )) x % n else nextLong(n)
+      if (n <= 0) throw new java.lang.IllegalArgumentException("bound must be positive")
+      if (n <= Int.MaxValue) r.nextInt(n.toInt)
+      else {
+        val RAND_MAX = Long.MaxValue
+        // 2^63-1
+        val x = r.nextLong >>> 1 // [0, 2^63), strip the sign bit
+        if (x < (RAND_MAX - (RAND_MAX % n))) x % n else nextLong(n)
+      }
     }
   }
   implicit class SmallGraphs(sc: SparkContext) {
