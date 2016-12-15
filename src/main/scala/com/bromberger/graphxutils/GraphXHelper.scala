@@ -279,8 +279,8 @@ object GraphXHelper {
 
     /**
       * An undirected complete graph (all pairs of nodes interconnected).
-      * @param n
-      * @return
+      * @param n  The number of vertices in the graph
+      * @return   A GraphX graph
       */
     def completeGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
