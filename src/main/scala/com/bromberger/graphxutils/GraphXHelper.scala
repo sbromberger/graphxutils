@@ -173,11 +173,11 @@ object GraphXHelper {
     }
 
     /**
-      * A directed circle graph with a given number of nodes.
+      * A directed cycle graph with a given number of nodes.
       * @param n    Number of nodes in the circle graph.
       * @return     A GraphX graph
       */
-    def circleDiGraph(n:Long): Graph[Unit, Unit] = {
+    def cycleDiGraph(n:Long): Graph[Unit, Unit] = {
       val r = 0L.until(n)
       val nodes = makeNodes(n)
       val edges : RDD[Edge[Unit]] = sc.parallelize(r.map(n => Edge(n, r.start + (n-r.start +1) % r.length, ())))
@@ -203,7 +203,7 @@ object GraphXHelper {
       * @return   A GraphX graph
       */
     def wheelDiGraph(n:Long): Graph[Unit, Unit] = {
-      val wheel = circleDiGraph(n-1)
+      val wheel = cycleDiGraph(n-1)
       val nodes = makeNodes(n)
       val spokes: RDD[Edge[Unit]] = wheel.vertices.map(v => Edge(n - 1, v._1))
       val edges: RDD[Edge[Unit]] = wheel.edges.union(spokes).map(e => Edge((e.srcId + 1) % n, (e.dstId + 1) % n))
@@ -218,6 +218,35 @@ object GraphXHelper {
       val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 3), (2, 4), (3, 4))
       val edges = makeEdgesFrom(e)
       val nodes = makeNodes(5)
+      Graph(nodes, edges)
+    }
+
+    /**
+      * A directed star graph with a given number of nodes. VertexId 0 is the center node.
+      * @param n    The number of nodes, including the center vertex
+      * @return     A GraphX graph
+      */
+    def starDiGraph(n:Long): Graph[Unit, Unit] = {
+      val nodes = makeNodes(n)
+      val e = 1L.until(n).map(v => (0L, v))
+      val edges = makeEdgesFrom(e)
+      Graph(nodes, edges)
+    }
+
+    /**
+      * A directed full binary tree of a given depth. VertexId 0 is the root node.
+      * @param depth    The depth of the binary tree
+      * @return         A GraphX graph
+      */
+    def binaryTreeDiGraph(depth:Long): Graph[Unit, Unit] = {
+      val nNodes = Math.pow(2L, depth).toLong - 1L
+      val nodes = makeNodes(nNodes)
+      val e = depth.until(1).by(-1).flatMap(d => {
+        val offsetNodeId = Math.pow(2, d-1).toLong - 1
+        val nEdgesAtDepth = offsetNodeId + 1
+        offsetNodeId.until(offsetNodeId + nEdgesAtDepth).map(v => ((v-1) / 2, v))
+      })
+      val edges = makeEdgesFrom(e)
       Graph(nodes, edges)
     }
 
@@ -249,6 +278,18 @@ object GraphXHelper {
     }
 
     /**
+      * An undirected complete graph (all pairs of nodes interconnected).
+      * @param n
+      * @return
+      */
+    def completeGraph(n:Long): Graph[Unit, Unit] = {
+      val nodes = makeNodes(n)
+      val e = 0L.until(n).flatMap(i => 0L.until(n).filterNot(j=> j == i).map(j => (i, j))).map(p=> (p._1, p._2))
+      val edges = makeEdgesFrom(e)
+      Graph(nodes, edges)
+    }
+
+    /**
       * An undirected path graph of a given length.
       * @param n  Length of the path graph
       * @return   A GraphX graph
@@ -256,11 +297,11 @@ object GraphXHelper {
     def pathGraph(n:Long): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
 
     /**
-      * An undirected circle graph with a given number of nodes.
+      * An undirected cycle graph with a given number of nodes.
       * @param n    Number of nodes in the graph
       * @return     A GraphX graph
       */
-    def circleGraph(n:Long): Graph[Unit, Unit] = circleDiGraph(n).toUndirected
+    def cycleGraph(n:Long): Graph[Unit, Unit] = cycleDiGraph(n).toUndirected
 
     /**
       * An undirected wheel graph with a given number of nodes. VertexId 0 is the center node.
@@ -274,5 +315,19 @@ object GraphXHelper {
       * @return     A GraphX graph
       */
     def houseGraph: Graph[Unit, Unit] = houseDiGraph.toUndirected
+
+    /**
+      * An undirected star graph with a given number of nodes. VertexId 0 is the center node.
+      * @param n    The number of nodes, including the center vertex
+      * @return     A GraphX graph
+      */
+    def starGraph(n:Long): Graph[Unit, Unit] = starDiGraph(n).toUndirected
+
+    /**
+      * An undirected full binary tree of a given depth. VertexId 0 is the root node.
+      * @param depth    The depth of the binary tree
+      * @return         A GraphX graph
+      */
+    def binaryTreeGraph(depth:Long): Graph[Unit, Unit] = binaryTreeDiGraph(depth).toUndirected
   }
 }
