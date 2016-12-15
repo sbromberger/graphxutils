@@ -1,6 +1,5 @@
 package com.bromberger.graphxutils
 
-import org.apache.commons.rng.UniformRandomProvider
 import org.apache.commons.rng.simple.RandomSource
 import org.apache.spark.SparkContext
 import org.apache.spark.graphx._
@@ -36,17 +35,61 @@ object GraphXHelper {
     val emptyEdgeRDD: RDD[Edge[ED]] = g.edges.sparkContext.emptyRDD[Edge[ED]]
     val emptyTripletRDD: RDD[EdgeTriplet[VD, ED]] = g.triplets.sparkContext.emptyRDD[EdgeTriplet[VD, ED]]
 
+    /**
+      * Returns the outgoing edges / arcs for a given vertex.
+      * @param v  The vertex to query
+      * @return   An RDD containing the outgoing edges
+      */
     def outEdges(v: VertexId): RDD[Edge[ED]] = g.edges.filter(_.srcId == v)
+
+    /**
+      * Returns the incoming edges / arcs for a given vertex.
+      * @param v   The vertex to query
+      * @return    An RDD containing the incoming edges
+      */
     def inEdges(v: VertexId): RDD[Edge[ED]] = g.edges.filter(_.dstId == v)
 
+    /**
+      * Returns the outgoing triplets for a given vertex.
+      * @param v    The vertex to query
+      * @return     An RDD containing the outgoing triplets
+      */
     def outTriplets(v: VertexId): RDD[EdgeTriplet[VD, ED]] = g.triplets.filter(_.srcId == v)
+
+    /**
+      * Returns the incoming triplets for a given vertex.
+      * @param v    The vertex to query
+      * @return     An RDD containing the incoming triplets
+      */
     def inTriplets(v: VertexId): RDD[EdgeTriplet[VD, ED]] = g.triplets.filter(_.dstId == v)
 
+    /**
+      * Returns the outgoing neighbors for a given vertex.
+      * @param v    The vertex to query
+      * @return     An RDD containing the outgoing neighbors
+      */
     def outNeighbors(v: VertexId): RDD[(VertexId, VD)] = g.outTriplets(v).map(t => (t.dstId, t.dstAttr))
+
+    /**
+      * Returns the incoming neighbors for a given vertex.
+      * @param v    The vertex to query
+      * @return     An RDD containing the incoming neighbors
+      */
     def inNeighbors(v: VertexId): RDD[(VertexId, VD)] = g.inTriplets(v).map(t => (t.srcId, t.srcAttr))
 
+    /**
+      * Creates a graph that is the union of the edge and vertex RDDs of this graph and another.
+      * @param that   The graph with which the union should be performed
+      * @return       A GraphX graph
+      */
     def union(that:Graph[VD, ED]): Graph[VD, ED] = Graph(g.triplets.union(that.triplets))
 
+    /**
+      * Creates an BFS egoNet of a given depth starting at a specified vertex. Uses pregel.
+      * @param s  The starting vertex for the egoNet
+      * @param n  The depth of the egoNet (0 is the starting vertex itself)
+      * @return   A GraphX representation of the egoNet
+      */
     def egoNet(s: VertexId, n:Long): Graph[VD, ED] = {
       val initialMsg = Long.MinValue
       val newv = g.vertices.map(v => (v._1, (v._2, -1.toLong)))
@@ -75,6 +118,12 @@ object GraphXHelper {
       org.apache.spark.graphx.Graph[VD, ED](pregelSub.vertices.map(v => (v._1, v._2._1)), pregelSub.edges)
     }
 
+    /**
+      * Calculates geodesic distances from a starting vertex. Uses pregel.
+      * @param s    Starting vertex
+      * @return     An RDD of (VertexId, Long) tuples representing the
+      *             geodesic distance from the starting vertex to the VertexId.
+      */
     def gDistances(s: VertexId): RDD[(VertexId, Long)] = {
       val initialMsg = -1L
       val newv = g.vertices.map(v => (v._1, (v._2, initialMsg)))
@@ -109,7 +158,7 @@ object GraphXHelper {
     private def makeEdgesFrom(s:Seq[(Long, Long)]): RDD[Edge[Unit]] =
       sc.parallelize(s.map(e => Edge(e._1, e._2, ())))
 
-    private val r = RandomSource.create(RandomSource.MT);
+    private val r = RandomSource.create(RandomSource.MT)
 
     @tailrec
     private def genNPairs(nPairs:Long, maxVal:Long, ordered:Boolean = false, pairs:Set[(Long, Long)] = Set[(Long, Long)]()) : Seq[(Long, Long)] = {
@@ -123,6 +172,11 @@ object GraphXHelper {
       else genNPairs(nPairs, maxVal, ordered, pairs + genPair(maxVal, ordered))
     }
 
+    /**
+      * A directed circle graph with a given number of nodes.
+      * @param n    Number of nodes in the circle graph.
+      * @return     A GraphX graph
+      */
     def circleDiGraph(n:Long): Graph[Unit, Unit] = {
       val r = 0L.until(n)
       val nodes = makeNodes(n)
@@ -130,6 +184,11 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
+    /**
+      * A directed path graph of a given length.
+      * @param n    Length of the path graph
+      * @return     A GraphX graph
+      */
     def pathDiGraph(n:Long): Graph[Unit, Unit] = {
       val r = 0L.until(n)
       val rLen = r.length - 1
@@ -138,7 +197,11 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
-
+    /**
+      * A directed wheel graph with a given number of nodes. VertexId 0 is the center node.
+      * @param n  Number of nodes in the wheel graph, including the center node
+      * @return   A GraphX graph
+      */
     def wheelDiGraph(n:Long): Graph[Unit, Unit] = {
       val wheel = circleDiGraph(n-1)
       val nodes = makeNodes(n)
@@ -147,6 +210,10 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
+    /**
+      * A directed house graph
+      * @return   A Graphx graph
+      */
     def houseDiGraph: Graph[Unit, Unit] = {
       val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 3), (2, 4), (3, 4))
       val edges = makeEdgesFrom(e)
@@ -154,6 +221,13 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
+    /**
+      * A directed graph of a given order and size, with randomly-generated edges.
+      * Note: the graph will not contain self-loops.
+      * @param nv   The number of vertices in the graph
+      * @param ne   The number of random directed edges / arcs to include in the graph
+      * @return     A GraphX graph
+      */
     def randomDiGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
       assert(ne <= nv *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) + ")")
       val nodes = makeNodes(nv)
@@ -161,6 +235,12 @@ object GraphXHelper {
       Graph(nodes, sc.parallelize(pairs))
     }
 
+    /**
+      * An undirected graph of a given order and size, with randomly-generated edges.
+      * @param nv   The number of vertices in the graph
+      * @param ne   The number of undirected random edges to include in the graph
+      * @return     A GraphX graph
+      */
     def randomGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
       assert(ne <= nv / 2 *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) / 2 + ")")
       val nodes = makeNodes(nv)
@@ -168,9 +248,31 @@ object GraphXHelper {
       Graph(nodes, sc.parallelize(pairs))
     }
 
+    /**
+      * An undirected path graph of a given length.
+      * @param n  Length of the path graph
+      * @return   A GraphX graph
+      */
     def pathGraph(n:Long): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
+
+    /**
+      * An undirected circle graph with a given number of nodes.
+      * @param n    Number of nodes in the graph
+      * @return     A GraphX graph
+      */
     def circleGraph(n:Long): Graph[Unit, Unit] = circleDiGraph(n).toUndirected
+
+    /**
+      * An undirected wheel graph with a given number of nodes. VertexId 0 is the center node.
+      * @param n    Number of nodes in the graph, including the center node
+      * @return     A GraphX graph
+      */
     def wheelGraph(n:Long): Graph[Unit, Unit] = wheelDiGraph(n).toUndirected
+
+    /**
+      * An undirected house graph.
+      * @return     A GraphX graph
+      */
     def houseGraph: Graph[Unit, Unit] = houseDiGraph.toUndirected
   }
 }
