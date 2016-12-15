@@ -221,20 +221,21 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
-    def starDiGraph(n:Int): Graph[Int, Int] = {
+    def starDiGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
-      val edges = 1.until(n).map(v => Edge(0, v, 1))
-      Graph(nodes, sc.parallelize(edges))
+      val e = 1L.until(n).map(v => (0L, v))
+      val edges = makeEdgesFrom(e)
+      Graph(nodes, edges)
     }
 
-    def binaryTreeDiGraph(depth:Int): Graph[Int, Int] = {
-      def edgesFromRootAtDepth(v:VertexId, d:Int) = {
-        return List(Edge(v, )
-      }
-      val nodes = Math.pow(2, depth).toInt - 1
-      val edges =
-
-    }
+//    def binaryTreeDiGraph(depth:Int): Graph[Int, Int] = {
+//      def edgesFromRootAtDepth(v:VertexId, d:Int) = {
+//        return List(Edge(v, )
+//      }
+//      val nodes = Math.pow(2, depth).toInt - 1
+//      val edges =
+//
+//    }
 
     /**
       * A directed graph of a given order and size, with randomly-generated edges.
@@ -263,10 +264,11 @@ object GraphXHelper {
       Graph(nodes, sc.parallelize(pairs))
     }
 
-    def completeGraph(n:Int) = {
+    def completeGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
-      val edges = 0.until(n).flatMap(i => 0.until(n).filter(j=> j != i).map(j => (i, j))).map(p=> Edge(p._1, p._2, 1))
-      Graph(nodes, sc.parallelize(edges))
+      val e = 0L.until(n).flatMap(i => 0.until(n).filter(j=> j != i).map(j => (i, j))).map(p=> (p._1, p._2))
+      val edges = makeEdgesFrom(e)
+      Graph(nodes, edges)
     }
 
     /**
@@ -281,7 +283,7 @@ object GraphXHelper {
       * @param n    Number of nodes in the graph
       * @return     A GraphX graph
       */
-    def circleGraph(n:Long): Graph[Unit, Unit] = circleDiGraph(n).toUndirected
+    def cycleGraph(n:Long): Graph[Unit, Unit] = cycleDiGraph(n).toUndirected
 
     /**
       * An undirected wheel graph with a given number of nodes. VertexId 0 is the center node.
