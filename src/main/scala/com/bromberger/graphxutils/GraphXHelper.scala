@@ -1,5 +1,7 @@
 package com.bromberger.graphxutils
 
+import org.apache.commons.rng.UniformRandomProvider
+import org.apache.commons.rng.simple.RandomSource
 import org.apache.spark.SparkContext
 import org.apache.spark.graphx._
 import org.apache.spark.rdd.RDD
@@ -100,18 +102,6 @@ object GraphXHelper {
     }
   }
 
-  implicit class NextLongN(r: scala.util.Random) {
-    def nextLong(n:Long): Long = {
-      if (n <= 0) throw new java.lang.IllegalArgumentException("bound must be positive")
-      if (n <= Int.MaxValue) r.nextInt(n.toInt).toLong
-      else {
-        val RAND_MAX = Long.MaxValue
-        // 2^63-1
-        val x = r.nextLong >>> 1 // [0, 2^63), strip the sign bit
-        if (x < (RAND_MAX - (RAND_MAX % n))) x % n else nextLong(n)
-      }
-    }
-  }
   implicit class SmallGraphs(sc: SparkContext) {
     private def makeNodesFrom(r:Seq[Long]) : RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v, ())))
     private def makeNodes(n:Long) : RDD[(VertexId, Unit)] = makeNodesFrom(0L.until(n))
@@ -119,7 +109,7 @@ object GraphXHelper {
     private def makeEdgesFrom(s:Seq[(Long, Long)]): RDD[Edge[Unit]] =
       sc.parallelize(s.map(e => Edge(e._1, e._2, ())))
 
-    private val r = new scala.util.Random
+    private val r = RandomSource.create(RandomSource.MT);
 
     @tailrec
     private def genNPairs(nPairs:Long, maxVal:Long, ordered:Boolean = false, pairs:Set[(Long, Long)] = Set[(Long, Long)]()) : Seq[(Long, Long)] = {
