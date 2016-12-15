@@ -266,7 +266,7 @@ object GraphXHelper {
 
     def completeGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
-      val e = 0L.until(n).flatMap(i => 0.until(n).filter(j=> j != i).map(j => (i, j))).map(p=> (p._1, p._2))
+      val e = 0L.until(n).flatMap(i => 0L.until(n).filter(j=> j != i).map(j => (i, j))).map(p=> (p._1, p._2))
       val edges = makeEdgesFrom(e)
       Graph(nodes, edges)
     }
