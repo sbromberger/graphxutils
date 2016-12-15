@@ -173,7 +173,7 @@ object GraphXHelper {
     }
 
     /**
-      * A directed circle graph with a given number of nodes.
+      * A directed cycle graph with a given number of nodes.
       * @param n    Number of nodes in the circle graph.
       * @return     A GraphX graph
       */
@@ -221,6 +221,11 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
+    /**
+      * A directed star graph with a given number of nodes. VertexId 0 is the center node.
+      * @param n    The number of nodes, including the center vertex
+      * @return     A GraphX graph
+      */
     def starDiGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
       val e = 1L.until(n).map(v => (0L, v))
@@ -228,14 +233,22 @@ object GraphXHelper {
       Graph(nodes, edges)
     }
 
-//    def binaryTreeDiGraph(depth:Int): Graph[Int, Int] = {
-//      def edgesFromRootAtDepth(v:VertexId, d:Int) = {
-//        return List(Edge(v, )
-//      }
-//      val nodes = Math.pow(2, depth).toInt - 1
-//      val edges =
-//
-//    }
+    /**
+      * A directed full binary tree of a given depth. VertexId 0 is the root node.
+      * @param depth    The depth of the binary tree
+      * @return         A GraphX graph
+      */
+    def binaryTreeDiGraph(depth:Long): Graph[Unit, Unit] = {
+      val nNodes = Math.pow(2L, depth).toLong - 1L
+      val nodes = makeNodes(nNodes)
+      val e = depth.until(1).by(-1).flatMap(d => {
+        val offsetNodeId = Math.pow(2, d-1).toLong - 1
+        val nEdgesAtDepth = offsetNodeId + 1
+        offsetNodeId.until(offsetNodeId + nEdgesAtDepth).map(v => ((v-1) / 2, v))
+      })
+      val edges = makeEdgesFrom(e)
+      Graph(nodes, edges)
+    }
 
     /**
       * A directed graph of a given order and size, with randomly-generated edges.
@@ -264,9 +277,14 @@ object GraphXHelper {
       Graph(nodes, sc.parallelize(pairs))
     }
 
+    /**
+      * An undirected complete graph (all pairs of nodes interconnected).
+      * @param n
+      * @return
+      */
     def completeGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
-      val e = 0L.until(n).flatMap(i => 0L.until(n).filter(j=> j != i).map(j => (i, j))).map(p=> (p._1, p._2))
+      val e = 0L.until(n).flatMap(i => 0L.until(n).filterNot(j=> j == i).map(j => (i, j))).map(p=> (p._1, p._2))
       val edges = makeEdgesFrom(e)
       Graph(nodes, edges)
     }
@@ -279,7 +297,7 @@ object GraphXHelper {
     def pathGraph(n:Long): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
 
     /**
-      * An undirected circle graph with a given number of nodes.
+      * An undirected cycle graph with a given number of nodes.
       * @param n    Number of nodes in the graph
       * @return     A GraphX graph
       */
@@ -297,5 +315,19 @@ object GraphXHelper {
       * @return     A GraphX graph
       */
     def houseGraph: Graph[Unit, Unit] = houseDiGraph.toUndirected
+
+    /**
+      * An undirected star graph with a given number of nodes. VertexId 0 is the center node.
+      * @param n    The number of nodes, including the center vertex
+      * @return     A GraphX graph
+      */
+    def starGraph(n:Long): Graph[Unit, Unit] = starDiGraph(n).toUndirected
+
+    /**
+      * An undirected full binary tree of a given depth. VertexId 0 is the root node.
+      * @param depth    The depth of the binary tree
+      * @return         A GraphX graph
+      */
+    def binaryTreeGraph(depth:Long): Graph[Unit, Unit] = binaryTreeDiGraph(depth).toUndirected
   }
 }
