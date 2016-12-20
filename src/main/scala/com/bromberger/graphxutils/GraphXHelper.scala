@@ -1,11 +1,14 @@
 package com.bromberger.graphxutils
 
 import org.apache.commons.rng.simple.RandomSource
-import org.apache.spark.SparkContext
+import org.apache.log4j.{Level, Logger}
+import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.graphx._
+import org.apache.spark.mllib.random.RandomRDDs.uniformRDD
 import org.apache.spark.rdd.RDD
 
 import scala.annotation.tailrec
+import scala.collection.immutable.Map
 import scala.reflect.ClassTag
 
 /*
@@ -14,13 +17,22 @@ import scala.reflect.ClassTag
 
 
 object GraphXHelper {
+
+  def time[R](block: => R): R = {
+    val t0 = System.nanoTime()
+    val result = block    // call-by-name
+    val t1 = System.nanoTime()
+    println("Elapsed time: " + (t1 - t0) / 1000000000.0 + "s")
+    result
+  }
+
   implicit class EdgeAdditions[ED:ClassTag](e: Edge[ED]) {
     def reverse(xform: ED => ED): Edge[ED] = Edge(e.dstId , e.srcId, xform(e.attr))
     def reverse: Edge[ED] = reverse(identity[ED])
   }
 
   implicit class GraphXAdditions[VD:ClassTag, ED:ClassTag](g: Graph[VD, ED]) extends Serializable {
-    def Graph(tripletRDD:RDD[EdgeTriplet[VD, ED]]): org.apache.spark.graphx.Graph[VD, ED] = {
+    def Graph(tripletRDD: RDD[EdgeTriplet[VD, ED]]): org.apache.spark.graphx.Graph[VD, ED] = {
       val nodes = tripletRDD.flatMap(t => List((t.srcId, t.srcAttr), (t.dstId, t.dstAttr))).distinct
       val edges = tripletRDD.map(t => Edge[ED](t.srcId, t.dstId, t.attr))
       org.apache.spark.graphx.Graph(nodes, edges)
@@ -37,63 +49,70 @@ object GraphXHelper {
 
     /**
       * Returns the outgoing edges / arcs for a given vertex.
-      * @param v  The vertex to query
-      * @return   An RDD containing the outgoing edges
+      *
+      * @param v The vertex to query
+      * @return An RDD containing the outgoing edges
       */
     def outEdges(v: VertexId): RDD[Edge[ED]] = g.edges.filter(_.srcId == v)
 
     /**
       * Returns the incoming edges / arcs for a given vertex.
-      * @param v   The vertex to query
-      * @return    An RDD containing the incoming edges
+      *
+      * @param v The vertex to query
+      * @return An RDD containing the incoming edges
       */
     def inEdges(v: VertexId): RDD[Edge[ED]] = g.edges.filter(_.dstId == v)
 
     /**
       * Returns the outgoing triplets for a given vertex.
-      * @param v    The vertex to query
-      * @return     An RDD containing the outgoing triplets
+      *
+      * @param v The vertex to query
+      * @return An RDD containing the outgoing triplets
       */
     def outTriplets(v: VertexId): RDD[EdgeTriplet[VD, ED]] = g.triplets.filter(_.srcId == v)
 
     /**
       * Returns the incoming triplets for a given vertex.
-      * @param v    The vertex to query
-      * @return     An RDD containing the incoming triplets
+      *
+      * @param v The vertex to query
+      * @return An RDD containing the incoming triplets
       */
     def inTriplets(v: VertexId): RDD[EdgeTriplet[VD, ED]] = g.triplets.filter(_.dstId == v)
 
     /**
       * Returns the outgoing neighbors for a given vertex.
-      * @param v    The vertex to query
-      * @return     An RDD containing the outgoing neighbors
+      *
+      * @param v The vertex to query
+      * @return An RDD containing the outgoing neighbors
       */
     def outNeighbors(v: VertexId): RDD[(VertexId, VD)] = g.outTriplets(v).map(t => (t.dstId, t.dstAttr))
 
     /**
       * Returns the incoming neighbors for a given vertex.
-      * @param v    The vertex to query
-      * @return     An RDD containing the incoming neighbors
+      *
+      * @param v The vertex to query
+      * @return An RDD containing the incoming neighbors
       */
     def inNeighbors(v: VertexId): RDD[(VertexId, VD)] = g.inTriplets(v).map(t => (t.srcId, t.srcAttr))
 
     /**
       * Creates a graph that is the union of the edge and vertex RDDs of this graph and another.
-      * @param that   The graph with which the union should be performed
-      * @return       A GraphX graph
+      *
+      * @param that The graph with which the union should be performed
+      * @return A GraphX graph
       */
-    def union(that:Graph[VD, ED]): Graph[VD, ED] = Graph(g.triplets.union(that.triplets))
+    def union(that: Graph[VD, ED]): Graph[VD, ED] = Graph(g.triplets.union(that.triplets))
 
     /**
       * Creates an BFS egoNet of a given depth starting at a specified vertex. Uses pregel.
-      * @param s  The starting vertex for the egoNet
-      * @param n  The depth of the egoNet (0 is the starting vertex itself)
-      * @return   A GraphX representation of the egoNet
+      *
+      * @param s The starting vertex for the egoNet
+      * @param n The depth of the egoNet (0 is the starting vertex itself)
+      * @return A GraphX representation of the egoNet
       */
-    def egoNet(s: VertexId, n:Long): Graph[VD, ED] = {
+    def egoNet(s: VertexId, n: Long): Graph[VD, ED] = {
       val initialMsg = Long.MinValue
-      val newv = g.vertices.map(v => (v._1, (v._2, -1.toLong)))
-      val pregelg = org.apache.spark.graphx.Graph[(VD, Long), ED](newv, g.edges)
+      val pregelg = g.mapVertices((_, vd) => (vd, -1L))
 
       def vprog(v: VertexId, value: (VD, Long), message: Long): (VD, Long) = {
         if (v == s) (value._1, n)
@@ -120,16 +139,16 @@ object GraphXHelper {
 
     /**
       * Calculates geodesic distances from a starting vertex. Uses pregel.
-      * @param s    Starting vertex
-      * @return     An RDD of (VertexId, Long) tuples representing the
-      *             geodesic distance from the starting vertex to the VertexId.
+      *
+      * @param s Starting vertex
+      * @return An RDD of (VertexId, Long) tuples representing the
+      *         geodesic distance from the starting vertex to the VertexId.
       */
     def gDistances(s: VertexId): RDD[(VertexId, Long)] = {
       val initialMsg = -1L
-      val newv = g.vertices.map(v => (v._1, (v._2, initialMsg)))
-      val pregelg = org.apache.spark.graphx.Graph[(VD, Long), ED](newv, g.edges)
+      val pregelg = g.mapVertices((_, vd) => (vd, initialMsg))
 
-      def vprog(v:VertexId, value: (VD, Long), message: Long): (VD, Long) = {
+      def vprog(v: VertexId, value: (VD, Long), message: Long): (VD, Long) = {
         if (v == s) (value._1, 0L)
         else (value._1, message)
       }
@@ -148,6 +167,56 @@ object GraphXHelper {
 
       val pregelRun = pregelg.pregel(initialMsg)(vprog, sendMsg, mergeMsg)
       pregelRun.vertices.map(v => v._1 -> v._2._2)
+    }
+
+    case class ParentDist(parent:VertexId, dist:Long) {
+      def next = ParentDist(parent, dist + 1)
+      def <(that:ParentDist): Boolean = dist < that.dist
+      def min(that:ParentDist): ParentDist = if (dist < that.dist) this else that
+      override def toString:String = "distance " + dist + ", parent " + parent
+    }
+
+    def allPairsShortestPaths(distFn: Edge[ED] => Double = e => 1): RDD[(VertexId, Map[VertexId, ParentDist])] = {
+      val initialMsg = Map(-1L -> ParentDist(-1L, -1L))
+      val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, ParentDist](vid -> ParentDist(vid, 0L)))).reverse
+      def vprog(v: VertexId, value: (VD, Map[VertexId, ParentDist]), message: Map[VertexId, ParentDist]): (VD, Map[VertexId, ParentDist]) = {
+        if (v == 0) println("--- NEW ITERATION ---")
+        val updatedValues = mergeMsg(value._2, message).filter(v => v._2.dist >= 0)
+        (value._1, updatedValues)
+      }
+
+      def sendMsg(triplet: EdgeTriplet[(VD, Map[VertexId, ParentDist]), ED]): Iterator[(VertexId, Map[VertexId, ParentDist])] = {
+        val dstVertexId = triplet.dstId
+        val srcMap = triplet.srcAttr._2
+        val dstMap = triplet.dstAttr._2  // guaranteed to have dstVertexId as a key
+
+        val updatesToSend : Map[VertexId, ParentDist] = srcMap.filter {
+          case (vid, srcPD) => dstMap.get(vid) match {
+            case Some(dstPD) => dstPD.dist > srcPD.dist + 1  && dstPD.parent != triplet.srcId  // if it exists, is it a new, cheaper path?
+            case _ => true // not found - new update
+          }
+        }.map(u => u._1 -> ParentDist(triplet.srcId, u._2.dist +1))
+
+        if (updatesToSend.nonEmpty) {
+          println("sending " + updatesToSend.size + " messages from " + triplet.srcId + " to " + dstVertexId)
+          updatesToSend.keys.foreach(k => println("  " + k + " -> " + updatesToSend(k)))
+          Iterator[(VertexId, Map[VertexId, ParentDist])]((dstVertexId, updatesToSend))
+        }
+        else
+          Iterator.empty
+      }
+
+      def mergeMsg(m1: Map[VertexId, ParentDist], m2: Map[VertexId, ParentDist]): Map[VertexId, ParentDist] = {
+
+        def mergeOption[A](o1: Option[A], o2: Option[A])(f: (A, A) => A): A = if (o1.isDefined && o2.isDefined) f(o1.get, o2.get) else o1.orElse(o2).get
+        def mergeMap[A, B](m1: Map[A, B], m2: Map[A, B])(f: (B, B) => B) = (m1.keySet ++ m2.keySet).iterator.map(k => (k, mergeOption(m1.get(k), m2.get(k))(f))).toMap
+
+        mergeMap(m1, m2)(_ min _)
+      }
+
+      val pregelRun = pregelg.pregel(initialMsg)(vprog, sendMsg, mergeMsg)
+      val sps = pregelRun.vertices.map(v => v._1 -> v._2._2)
+      sps
     }
   }
 
@@ -215,7 +284,7 @@ object GraphXHelper {
       * @return   A Graphx graph
       */
     def houseDiGraph: Graph[Unit, Unit] = {
-      val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 3), (2, 4), (3, 4))
+      val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 4), (3, 4))
       val edges = makeEdgesFrom(e)
       val nodes = makeNodes(5)
       Graph(nodes, edges)
@@ -258,12 +327,33 @@ object GraphXHelper {
       * @return     A GraphX graph
       */
     def randomDiGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
-      assert(ne <= nv *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) + ")")
+      val maxPossibleEdges = nv * (nv-1)
+      assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
+      val nv2 = nv * nv
+      val edgeRDD = makePairs(ne, nv, v => (nv2 * v).toLong).map(p => Edge(p._1, p._2, ()))
+      Graph(nodes, edgeRDD)
+
       val pairs = genNPairs(ne, nv).map(p => Edge(p._1, p._2, ()))
       Graph(nodes, sc.parallelize(pairs))
     }
 
+    private def makePairs(n:Long, nv: Long, xform: Double => Long): RDD[(Long, Long)] = {
+      @tailrec
+      def makeTheRest(n:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
+        if (n <= 0) currRDD
+        else {
+          val newRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt)
+          val newPairRDD = newRDD.map(xform).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2).distinct
+          makeTheRest(n - newPairRDD.count, currRDD.union(newPairRDD))
+        }
+      }
+      val initialRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt).distinct
+          .map(xform).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+
+      val allDoubles = makeTheRest(n - initialRDD.count, initialRDD)
+      allDoubles
+    }
     /**
       * An undirected graph of a given order and size, with randomly-generated edges.
       * @param nv   The number of vertices in the graph
@@ -271,10 +361,12 @@ object GraphXHelper {
       * @return     A GraphX graph
       */
     def randomGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
-      assert(ne <= nv / 2 *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) / 2 + ")")
+      val maxPossibleEdges = nv * (nv-1) / 2
+      assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val pairs = genNPairs(ne, nv, ordered=true).flatMap(p => Seq(Edge(p._1, p._2, ()), Edge(p._2, p._1, ())))
-      Graph(nodes, sc.parallelize(pairs))
+      val nv2 = nv * nv
+      val edgeRDD = makePairs(ne, nv, v => (nv2 * v).toLong).map(p => Edge(p._1, p._2, ()))
+      Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
     }
 
     /**
@@ -329,5 +421,23 @@ object GraphXHelper {
       * @return         A GraphX graph
       */
     def binaryTreeGraph(depth:Long): Graph[Unit, Unit] = binaryTreeDiGraph(depth).toUndirected
+  }
+
+  def main(args: Array[String]): Unit = {
+    Logger.getLogger("com").setLevel(Level.WARN)
+    Logger.getLogger("org").setLevel(Level.ERROR)
+    Logger.getLogger("bromberger").setLevel(Level.WARN)
+    val conf = new SparkConf().setAppName("test").setMaster("local[1]")
+    val sc = new SparkContext(conf)
+
+    val g = sc.cycleDiGraph(4)
+
+    println("before asp")
+    val asp = time {
+      g.allPairsShortestPaths()
+    }
+    println("after asp")
+    asp.foreach(u => println(u._1 + " -> " + u._2))
+    //    g.edges.foreach(e => println(e.srcId + " -> " + e.dstId))
   }
 }
