@@ -307,20 +307,26 @@ object GraphXHelper {
       * Makes an RDD of Pairs of Long that are distinct and unique.
       * @param n    The number of pairs to make
       * @param nv   The maximum value for each element in the pair
+      * @param ordered  True if the pairs should be ordered
       */
-    private def makePairs(n:Long, nv: Long): RDD[(Long, Long)] = {
+    private def makePairs(n:Long, nv: Long, ordered: Boolean = false): RDD[(Long, Long)] = {
       val nv2 = nv * nv
       @tailrec
-      def makeTheRest(n:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
-        if (n <= 0) currRDD
+      def makeTheRest(remaining:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
+        assert(remaining >= 0, "Whoops - we have overshot by " + (-remaining) + " elements!")
+        if (remaining == 0) currRDD
         else {
-          val newRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt)
-          val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2).distinct
-          makeTheRest(n - newPairRDD.count, currRDD.union(newPairRDD))
+          val newRDD = uniformRDD(sc, remaining, ((n / Int.MaxValue) + 1).toInt)
+          val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+              .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
+          val unionedRDD = currRDD.union(newPairRDD).distinct
+          makeTheRest(n - unionedRDD.count, unionedRDD)
         }
       }
-      val initialRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt).distinct
+
+      val initialRDD = uniformRDD(sc, n, ((n / Int.MaxValue) + 1).toInt)
         .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+        .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
 
       makeTheRest(n - initialRDD.count, initialRDD)
     }
@@ -335,9 +341,12 @@ object GraphXHelper {
     def randomDiGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
       val maxPossibleEdges = nv * (nv-1)
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
-      val nodes = makeNodes(nv)
-      val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
-      Graph(nodes, edgeRDD)
+      if (ne == maxPossibleEdges) completeGraph(nv)
+      else {
+        val nodes = makeNodes(nv)
+        val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
+        Graph(nodes, edgeRDD)
+      }
     }
 
     /**
@@ -349,9 +358,12 @@ object GraphXHelper {
     def randomGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
       val maxPossibleEdges = nv * (nv-1) / 2
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
-      val nodes = makeNodes(nv)
-      val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
-      Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
+      if (ne == maxPossibleEdges) completeGraph(nv)
+      else {
+        val nodes = makeNodes(nv)
+        val edgeRDD = makePairs(ne, nv, ordered = true).map(p => Edge(p._1, p._2, ()))
+        Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
+      }
     }
 
     /**
