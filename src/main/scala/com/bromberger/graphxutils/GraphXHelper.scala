@@ -1,8 +1,10 @@
 package com.bromberger.graphxutils
 
 import org.apache.commons.rng.simple.RandomSource
+import org.apache.log4j.{Level, Logger}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.graphx._
+import org.apache.spark.mllib.random.RandomRDDs.uniformRDD
 import org.apache.spark.rdd.RDD
 
 import scala.annotation.tailrec
@@ -171,14 +173,14 @@ object GraphXHelper {
       def next = ParentDist(parent, dist + 1)
       def <(that:ParentDist): Boolean = dist < that.dist
       def min(that:ParentDist): ParentDist = if (dist < that.dist) this else that
-      override def toString():String = "distance " + dist + ", parent " + parent
+      override def toString:String = "distance " + dist + ", parent " + parent
     }
 
-    def allPairsShortestPaths: RDD[(VertexId, Map[VertexId, ParentDist])] = {
+    def allPairsShortestPaths(distFn: Edge[ED] => Double = e => 1): RDD[(VertexId, Map[VertexId, ParentDist])] = {
       val initialMsg = Map(-1L -> ParentDist(-1L, -1L))
       val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, ParentDist](vid -> ParentDist(vid, 0L)))).reverse
-
       def vprog(v: VertexId, value: (VD, Map[VertexId, ParentDist]), message: Map[VertexId, ParentDist]): (VD, Map[VertexId, ParentDist]) = {
+        if (v == 0) println("--- NEW ITERATION ---")
         val updatedValues = mergeMsg(value._2, message).filter(v => v._2.dist >= 0)
         (value._1, updatedValues)
       }
@@ -190,14 +192,16 @@ object GraphXHelper {
 
         val updatesToSend : Map[VertexId, ParentDist] = srcMap.filter {
           case (vid, srcPD) => dstMap.get(vid) match {
-            case Some(dstPD) => dstPD.dist > srcPD.dist + 1   // if it exists, is it cheaper?
+            case Some(dstPD) => dstPD.dist > srcPD.dist + 1  && dstPD.parent != triplet.srcId  // if it exists, is it a new, cheaper path?
             case _ => true // not found - new update
           }
         }.map(u => u._1 -> ParentDist(triplet.srcId, u._2.dist +1))
 
-
-        if (updatesToSend.nonEmpty)
+        if (updatesToSend.nonEmpty) {
+          println("sending " + updatesToSend.size + " messages from " + triplet.srcId + " to " + dstVertexId)
+          updatesToSend.keys.foreach(k => println("  " + k + " -> " + updatesToSend(k)))
           Iterator[(VertexId, Map[VertexId, ParentDist])]((dstVertexId, updatesToSend))
+        }
         else
           Iterator.empty
       }
@@ -209,14 +213,6 @@ object GraphXHelper {
 
         mergeMap(m1, m2)(_ min _)
       }
-
-      // mm2 is here just to provide a separate function for vprog. Ideally we'd just re-use mergeMsg.
-//      def mm2(m1: Map[VertexId, ParentDist], m2: Map[VertexId, ParentDist]): Map[VertexId, ParentDist] = {
-//        m1.merged(m2) {
-//          case ((k1, v1), (_, v2)) => (k1, v1.min(v2))
-//          case n => throw new Exception("we've got a problem: " + n)
-//        }
-//      }
 
       val pregelRun = pregelg.pregel(initialMsg)(vprog, sendMsg, mergeMsg)
       val sps = pregelRun.vertices.map(v => v._1 -> v._2._2)
@@ -288,7 +284,7 @@ object GraphXHelper {
       * @return   A Graphx graph
       */
     def houseDiGraph: Graph[Unit, Unit] = {
-      val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 3), (2, 4), (3, 4))
+      val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 4), (3, 4))
       val edges = makeEdgesFrom(e)
       val nodes = makeNodes(5)
       Graph(nodes, edges)
@@ -331,12 +327,33 @@ object GraphXHelper {
       * @return     A GraphX graph
       */
     def randomDiGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
-      assert(ne <= nv *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) + ")")
+      val maxPossibleEdges = nv * (nv-1)
+      assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
+      val nv2 = nv * nv
+      val edgeRDD = makePairs(ne, nv, v => (nv2 * v).toLong).map(p => Edge(p._1, p._2, ()))
+      Graph(nodes, edgeRDD)
+
       val pairs = genNPairs(ne, nv).map(p => Edge(p._1, p._2, ()))
       Graph(nodes, sc.parallelize(pairs))
     }
 
+    private def makePairs(n:Long, nv: Long, xform: Double => Long): RDD[(Long, Long)] = {
+      @tailrec
+      def makeTheRest(n:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
+        if (n <= 0) currRDD
+        else {
+          val newRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt)
+          val newPairRDD = newRDD.map(xform).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2).distinct
+          makeTheRest(n - newPairRDD.count, currRDD.union(newPairRDD))
+        }
+      }
+      val initialRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt).distinct
+          .map(xform).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+
+      val allDoubles = makeTheRest(n - initialRDD.count, initialRDD)
+      allDoubles
+    }
     /**
       * An undirected graph of a given order and size, with randomly-generated edges.
       * @param nv   The number of vertices in the graph
@@ -344,10 +361,12 @@ object GraphXHelper {
       * @return     A GraphX graph
       */
     def randomGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
-      assert(ne <= nv / 2 *(nv-1), "Number of edges requested (" + ne + ") exceeds maximum possible (" + nv * (nv-1) / 2 + ")")
+      val maxPossibleEdges = nv * (nv-1) / 2
+      assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val pairs = genNPairs(ne, nv, ordered=true).flatMap(p => Seq(Edge(p._1, p._2, ()), Edge(p._2, p._1, ())))
-      Graph(nodes, sc.parallelize(pairs))
+      val nv2 = nv * nv
+      val edgeRDD = makePairs(ne, nv, v => (nv2 * v).toLong).map(p => Edge(p._1, p._2, ()))
+      Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
     }
 
     /**
@@ -405,17 +424,20 @@ object GraphXHelper {
   }
 
   def main(args: Array[String]): Unit = {
+    Logger.getLogger("com").setLevel(Level.WARN)
+    Logger.getLogger("org").setLevel(Level.ERROR)
+    Logger.getLogger("bromberger").setLevel(Level.WARN)
     val conf = new SparkConf().setAppName("test").setMaster("local[1]")
     val sc = new SparkContext(conf)
 
-    val g = sc.cycleGraph(50)
+    val g = sc.cycleDiGraph(4)
 
     println("before asp")
     val asp = time {
-      g.allPairsShortestPaths
+      g.allPairsShortestPaths()
     }
     println("after asp")
     asp.foreach(u => println(u._1 + " -> " + u._2))
-    g.edges.foreach(e => println(e.srcId + " -> " + e.dstId))
+    //    g.edges.foreach(e => println(e.srcId + " -> " + e.dstId))
   }
 }
