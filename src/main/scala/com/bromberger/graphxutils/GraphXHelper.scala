@@ -1,6 +1,5 @@
 package com.bromberger.graphxutils
 
-import org.apache.commons.rng.simple.RandomSource
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.graphx._
@@ -18,7 +17,7 @@ import scala.reflect.ClassTag
 
 object GraphXHelper {
 
-  def time[R](block: => R): R = {
+  private def time[R](block: => R): R = {
     val t0 = System.nanoTime()
     val result = block    // call-by-name
     val t1 = System.nanoTime()
@@ -226,21 +225,6 @@ object GraphXHelper {
 
     private def makeEdgesFrom(s:Seq[(Long, Long)]): RDD[Edge[Unit]] =
       sc.parallelize(s.map(e => Edge(e._1, e._2, ())))
-
-    private val r = RandomSource.create(RandomSource.MT)
-
-    @tailrec
-    private def genNPairs(nPairs:Long, maxVal:Long, ordered:Boolean = false, pairs:Set[(Long, Long)] = Set[(Long, Long)]()) : Seq[(Long, Long)] = {
-      def genPair(n: Long, ordered:Boolean = false): (Long, Long) = {
-        val (x, y) = (r.nextLong(n), r.nextLong(n))
-        if (x == y) genPair(n)
-        else if (ordered && (y < x)) (y, x) else (x, y)
-      }
-
-      if (pairs.size == nPairs) pairs.toList
-      else genNPairs(nPairs, maxVal, ordered, pairs + genPair(maxVal, ordered))
-    }
-
     /**
       * A directed cycle graph with a given number of nodes.
       * @param n    Number of nodes in the circle graph.
@@ -320,6 +304,28 @@ object GraphXHelper {
     }
 
     /**
+      * Makes an RDD of Pairs of Long that are distinct and unique.
+      * @param n    The number of pairs to make
+      * @param nv   The maximum value for each element in the pair
+      */
+    private def makePairs(n:Long, nv: Long): RDD[(Long, Long)] = {
+      val nv2 = nv * nv
+      @tailrec
+      def makeTheRest(n:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
+        if (n <= 0) currRDD
+        else {
+          val newRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt)
+          val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2).distinct
+          makeTheRest(n - newPairRDD.count, currRDD.union(newPairRDD))
+        }
+      }
+      val initialRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt).distinct
+        .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+
+      makeTheRest(n - initialRDD.count, initialRDD)
+    }
+
+    /**
       * A directed graph of a given order and size, with randomly-generated edges.
       * Note: the graph will not contain self-loops.
       * @param nv   The number of vertices in the graph
@@ -330,30 +336,10 @@ object GraphXHelper {
       val maxPossibleEdges = nv * (nv-1)
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val nv2 = nv * nv
-      val edgeRDD = makePairs(ne, nv, v => (nv2 * v).toLong).map(p => Edge(p._1, p._2, ()))
+      val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
       Graph(nodes, edgeRDD)
-
-      val pairs = genNPairs(ne, nv).map(p => Edge(p._1, p._2, ()))
-      Graph(nodes, sc.parallelize(pairs))
     }
 
-    private def makePairs(n:Long, nv: Long, xform: Double => Long): RDD[(Long, Long)] = {
-      @tailrec
-      def makeTheRest(n:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
-        if (n <= 0) currRDD
-        else {
-          val newRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt)
-          val newPairRDD = newRDD.map(xform).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2).distinct
-          makeTheRest(n - newPairRDD.count, currRDD.union(newPairRDD))
-        }
-      }
-      val initialRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt).distinct
-          .map(xform).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
-
-      val allDoubles = makeTheRest(n - initialRDD.count, initialRDD)
-      allDoubles
-    }
     /**
       * An undirected graph of a given order and size, with randomly-generated edges.
       * @param nv   The number of vertices in the graph
@@ -364,8 +350,7 @@ object GraphXHelper {
       val maxPossibleEdges = nv * (nv-1) / 2
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val nv2 = nv * nv
-      val edgeRDD = makePairs(ne, nv, v => (nv2 * v).toLong).map(p => Edge(p._1, p._2, ()))
+      val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
       Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
     }
 
