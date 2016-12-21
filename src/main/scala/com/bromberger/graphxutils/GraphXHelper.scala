@@ -311,11 +311,14 @@ object GraphXHelper {
       */
     private def makePairs(n:Long, nv: Long, ordered: Boolean = false): RDD[(Long, Long)] = {
       val nv2 = nv * nv
+      var i = 0
       @tailrec
       def makeTheRest(remaining:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
         assert(remaining >= 0, "Whoops - we have overshot by " + (-remaining) + " elements!")
+        println("in mtr with " + remaining + " remaining")
         if (remaining == 0) currRDD
         else {
+          i += 1
           val newRDD = uniformRDD(sc, remaining, ((n / Int.MaxValue) + 1).toInt)
           val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
               .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
@@ -341,12 +344,15 @@ object GraphXHelper {
     def randomDiGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
       val maxPossibleEdges = nv * (nv-1)
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
-      if (ne == maxPossibleEdges) completeGraph(nv)
-      else {
-        val nodes = makeNodes(nv)
-        val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
-        Graph(nodes, edgeRDD)
-      }
+      val nodes = makeNodes(nv)
+      val edgeRDD = if (ne < maxPossibleEdges * 0.62)
+        makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
+      else {    // dense graph
+        val allPairs = allPairsRDD(nv)
+        println("making " + (maxPossibleEdges - ne) + " pairs")
+        allPairs.subtract(makePairs(maxPossibleEdges - ne, nv)).map(p => Edge(p._1, p._2, ()))
+        }
+      Graph(nodes, edgeRDD)
     }
 
     /**
@@ -358,12 +364,27 @@ object GraphXHelper {
     def randomGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
       val maxPossibleEdges = nv * (nv-1) / 2
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
-      if (ne == maxPossibleEdges) completeGraph(nv)
-      else {
-        val nodes = makeNodes(nv)
-        val edgeRDD = makePairs(ne, nv, ordered = true).map(p => Edge(p._1, p._2, ()))
-        Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
+      val nodes = makeNodes(nv)
+      val edgeRDD = if (ne < maxPossibleEdges * .062)
+          makePairs(ne, nv, ordered = true).map(p => Edge(p._1, p._2, ()))
+      else {        // dense graph
+        val allPairs = allPairsRDD(nv).filter(p => p._1 > p._2)
+        println("allPairs for undirected = " + allPairs.count() + ", making " + (maxPossibleEdges - ne) + " pairs")
+        val undirectedPairsToRemove = makePairs(maxPossibleEdges - ne, nv, ordered = true)
+        val pairsToRemove = undirectedPairsToRemove.union(undirectedPairsToRemove.map(p => p.swap))
+        allPairs.subtract(pairsToRemove).map(p => Edge(p._1, p._2, ()))
       }
+      Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
+    }
+
+    /**
+      * Creates an RDD of pairs representing all (non-self-looped) edges for n vertices
+      * @param n  Number of vertices
+      * @return   an RDD of Pairs
+      */
+    private def allPairsRDD(n:Long): RDD[(Long, Long)] = {
+      val nRDD = sc.parallelize(0L.until(n))
+      nRDD.cartesian(nRDD).filter(p => p._1 != p._2)
     }
 
     /**
@@ -373,8 +394,8 @@ object GraphXHelper {
       */
     def completeGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
-      val e = 0L.until(n).flatMap(i => 0L.until(n).filterNot(j=> j == i).map(j => (i, j))).map(p=> (p._1, p._2))
-      val edges = makeEdgesFrom(e)
+      val edges = allPairsRDD(n).map(p => Edge(p._1, p._2, ()))
+
       Graph(nodes, edges)
     }
 
@@ -424,17 +445,25 @@ object GraphXHelper {
     Logger.getLogger("com").setLevel(Level.WARN)
     Logger.getLogger("org").setLevel(Level.ERROR)
     Logger.getLogger("bromberger").setLevel(Level.WARN)
-    val conf = new SparkConf().setAppName("test").setMaster("local[1]")
+    val conf = new SparkConf().setAppName("test").setMaster("local[*]")
     val sc = new SparkContext(conf)
 
     val g = sc.cycleDiGraph(4)
 
+    val ne = 44800
+    val nv = 300
     println("before asp")
     val asp = time {
-      g.allPairsShortestPaths()
+      sc.randomGraph(nv, ne)
     }
     println("after asp")
-    asp.foreach(u => println(u._1 + " -> " + u._2))
+    val vct = asp.vertices.count()
+    val ect = asp.edges.count()
+    asp.edges.foreach(println)
+    assert (vct == nv, "vct " + vct + " != nv " + nv)
+    assert (ect == (ne * 2), "ect " + ect+ " != 2ne " + (ne * 2))
+    println("all ok")
+//    asp.foreach(u => println(u._1 + " -> " + u._2))
     //    g.edges.foreach(e => println(e.srcId + " -> " + e.dstId))
   }
 }
