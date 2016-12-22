@@ -307,20 +307,29 @@ object GraphXHelper {
       * Makes an RDD of Pairs of Long that are distinct and unique.
       * @param n    The number of pairs to make
       * @param nv   The maximum value for each element in the pair
+      * @param ordered  True if the pairs should be ordered
       */
-    private def makePairs(n:Long, nv: Long): RDD[(Long, Long)] = {
+    private def makePairs(n:Long, nv: Long, ordered: Boolean = false): RDD[(Long, Long)] = {
       val nv2 = nv * nv
+      var i = 0
       @tailrec
-      def makeTheRest(n:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
-        if (n <= 0) currRDD
+      def makeTheRest(remaining:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
+        assert(remaining >= 0, "Whoops - we have overshot by " + (-remaining) + " elements!")
+        println("in mtr with " + remaining + " remaining")
+        if (remaining == 0) currRDD
         else {
-          val newRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt)
-          val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2).distinct
-          makeTheRest(n - newPairRDD.count, currRDD.union(newPairRDD))
+          i += 1
+          val newRDD = uniformRDD(sc, remaining, ((n / Int.MaxValue) + 1).toInt)
+          val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+              .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
+          val unionedRDD = currRDD.union(newPairRDD).distinct
+          makeTheRest(n - unionedRDD.count, unionedRDD)
         }
       }
-      val initialRDD = uniformRDD(sc, n % Int.MaxValue, (n / Int.MaxValue).toInt).distinct
+
+      val initialRDD = uniformRDD(sc, n, ((n / Int.MaxValue) + 1).toInt)
         .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+        .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
 
       makeTheRest(n - initialRDD.count, initialRDD)
     }
@@ -336,7 +345,13 @@ object GraphXHelper {
       val maxPossibleEdges = nv * (nv-1)
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
+      val edgeRDD = if (ne < maxPossibleEdges * 0.62)
+        makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
+      else {    // dense graph
+        val allPairs = allPairsRDD(nv)
+        println("making " + (maxPossibleEdges - ne) + " pairs")
+        allPairs.subtract(makePairs(maxPossibleEdges - ne, nv)).map(p => Edge(p._1, p._2, ()))
+        }
       Graph(nodes, edgeRDD)
     }
 
@@ -350,8 +365,26 @@ object GraphXHelper {
       val maxPossibleEdges = nv * (nv-1) / 2
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val edgeRDD = makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
+      val edgeRDD = if (ne < maxPossibleEdges * 0.62)
+          makePairs(ne, nv, ordered = true).map(p => Edge(p._1, p._2, ()))
+      else {        // dense graph
+        val allPairs = allPairsRDD(nv).filter(p => p._1 > p._2)
+        println("allPairs for undirected = " + allPairs.count() + ", making " + (maxPossibleEdges - ne) + " pairs")
+        val undirectedPairsToRemove = makePairs(maxPossibleEdges - ne, nv, ordered = true)
+        val pairsToRemove = undirectedPairsToRemove.union(undirectedPairsToRemove.map(p => p.swap))
+        allPairs.subtract(pairsToRemove).map(p => Edge(p._1, p._2, ()))
+      }
       Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
+    }
+
+    /**
+      * Creates an RDD of pairs representing all (non-self-looped) edges for n vertices
+      * @param n  Number of vertices
+      * @return   an RDD of Pairs
+      */
+    private def allPairsRDD(n:Long): RDD[(Long, Long)] = {
+      val nRDD = sc.parallelize(0L.until(n))
+      nRDD.cartesian(nRDD).filter(p => p._1 != p._2)
     }
 
     /**
@@ -361,8 +394,8 @@ object GraphXHelper {
       */
     def completeGraph(n:Long): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
-      val e = 0L.until(n).flatMap(i => 0L.until(n).filterNot(j=> j == i).map(j => (i, j))).map(p=> (p._1, p._2))
-      val edges = makeEdgesFrom(e)
+      val edges = allPairsRDD(n).map(p => Edge(p._1, p._2, ()))
+
       Graph(nodes, edges)
     }
 
@@ -408,21 +441,42 @@ object GraphXHelper {
     def binaryTreeGraph(depth:Long): Graph[Unit, Unit] = binaryTreeDiGraph(depth).toUndirected
   }
 
+
   def main(args: Array[String]): Unit = {
     Logger.getLogger("com").setLevel(Level.WARN)
     Logger.getLogger("org").setLevel(Level.ERROR)
     Logger.getLogger("bromberger").setLevel(Level.WARN)
-    val conf = new SparkConf().setAppName("test").setMaster("local[1]")
+    val conf = new SparkConf().setAppName("test").setMaster("local[*]")
     val sc = new SparkContext(conf)
+    val r = new scala.util.Random
 
-    val g = sc.cycleDiGraph(4)
-
-    println("before asp")
-    val asp = time {
-      g.allPairsShortestPaths()
+    def runOneDiGraphTest(): Unit = {
+      val nv = r.nextInt(1000)
+      val ne = r.nextInt(nv) * r.nextInt(nv)
+      println("running digraph with (" + nv + ", " + ne + ")")
+      val g = sc.randomDiGraph(nv, ne)
+      val vct = g.vertices.count()
+      val ect = g.edges.count()
+      assert(vct == nv, "vct " + vct + " != nv " + nv)
+      assert(ect == ne, "ect " + ect + " != ne " + ne)
     }
-    println("after asp")
-    asp.foreach(u => println(u._1 + " -> " + u._2))
-    //    g.edges.foreach(e => println(e.srcId + " -> " + e.dstId))
+
+    def runOneGraphTest(): Unit = {
+      val nv = r.nextInt(1000)
+      val ne = r.nextInt(nv) * r.nextInt(nv) / 2 - 1
+      println("running graph with (" + nv + ", " + ne + ")")
+      val g = sc.randomGraph(nv, ne)
+      val vct = g.vertices.count()
+      val ect = g.edges.count()
+      assert(vct == nv, "vct " + vct + " != nv " + nv)
+      assert(ect == 2 * ne, "ect " + ect + " != 2ne " + (ne * 2))
+    }
+
+
+    0.until(10).foreach(i => {
+      runOneDiGraphTest()
+      runOneGraphTest()
+      println("Test " + i + " ok")
+    })
   }
 }
