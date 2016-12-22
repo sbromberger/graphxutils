@@ -365,7 +365,7 @@ object GraphXHelper {
       val maxPossibleEdges = nv * (nv-1) / 2
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val edgeRDD = if (ne < maxPossibleEdges * .062)
+      val edgeRDD = if (ne < maxPossibleEdges * 0.62)
           makePairs(ne, nv, ordered = true).map(p => Edge(p._1, p._2, ()))
       else {        // dense graph
         val allPairs = allPairsRDD(nv).filter(p => p._1 > p._2)
@@ -441,29 +441,42 @@ object GraphXHelper {
     def binaryTreeGraph(depth:Long): Graph[Unit, Unit] = binaryTreeDiGraph(depth).toUndirected
   }
 
+
   def main(args: Array[String]): Unit = {
     Logger.getLogger("com").setLevel(Level.WARN)
     Logger.getLogger("org").setLevel(Level.ERROR)
     Logger.getLogger("bromberger").setLevel(Level.WARN)
     val conf = new SparkConf().setAppName("test").setMaster("local[*]")
     val sc = new SparkContext(conf)
+    val r = new scala.util.Random
 
-    val g = sc.cycleDiGraph(4)
-
-    val ne = 44800
-    val nv = 300
-    println("before asp")
-    val asp = time {
-      sc.randomGraph(nv, ne)
+    def runOneDiGraphTest(): Unit = {
+      val nv = r.nextInt(1000)
+      val ne = r.nextInt(nv) * r.nextInt(nv)
+      println("running digraph with (" + nv + ", " + ne + ")")
+      val g = sc.randomDiGraph(nv, ne)
+      val vct = g.vertices.count()
+      val ect = g.edges.count()
+      assert(vct == nv, "vct " + vct + " != nv " + nv)
+      assert(ect == ne, "ect " + ect + " != ne " + ne)
     }
-    println("after asp")
-    val vct = asp.vertices.count()
-    val ect = asp.edges.count()
-    asp.edges.foreach(println)
-    assert (vct == nv, "vct " + vct + " != nv " + nv)
-    assert (ect == (ne * 2), "ect " + ect+ " != 2ne " + (ne * 2))
-    println("all ok")
-//    asp.foreach(u => println(u._1 + " -> " + u._2))
-    //    g.edges.foreach(e => println(e.srcId + " -> " + e.dstId))
+
+    def runOneGraphTest(): Unit = {
+      val nv = r.nextInt(1000)
+      val ne = r.nextInt(nv) * r.nextInt(nv) / 2 - 1
+      println("running graph with (" + nv + ", " + ne + ")")
+      val g = sc.randomGraph(nv, ne)
+      val vct = g.vertices.count()
+      val ect = g.edges.count()
+      assert(vct == nv, "vct " + vct + " != nv " + nv)
+      assert(ect == 2 * ne, "ect " + ect + " != 2ne " + (ne * 2))
+    }
+
+
+    0.until(10).foreach(i => {
+      runOneDiGraphTest()
+      runOneGraphTest()
+      println("Test " + i + " ok")
+    })
   }
 }
