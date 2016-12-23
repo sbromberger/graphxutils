@@ -220,6 +220,7 @@ object GraphXHelper {
   }
 
   implicit class SmallGraphs(sc: SparkContext) {
+    private val densityCutoff = 0.62
     private def makeNodesFrom(r:Seq[Long]) : RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v, ())))
     private def makeNodes(n:Long) : RDD[(VertexId, Unit)] = makeNodesFrom(0L.until(n))
 
@@ -310,28 +311,32 @@ object GraphXHelper {
       * @param ordered  True if the pairs should be ordered
       */
     private def makePairs(n:Long, nv: Long, ordered: Boolean = false): RDD[(Long, Long)] = {
-      val nv2 = nv * nv
-      var i = 0
-      @tailrec
-      def makeTheRest(remaining:Long, currRDD:RDD[(Long, Long)]): RDD[(Long, Long)] = {
-        assert(remaining >= 0, "Whoops - we have overshot by " + (-remaining) + " elements!")
-        println("in mtr with " + remaining + " remaining")
-        if (remaining == 0) currRDD
-        else {
-          i += 1
-          val newRDD = uniformRDD(sc, remaining, ((n / Int.MaxValue) + 1).toInt)
-          val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+      if (n == 0) sc.parallelize(List[(Long, Long)]())
+      else {
+        val nv2 = nv * nv
+        var i = 0
+
+        @tailrec
+        def makeTheRest(remaining: Long, currRDD: RDD[(Long, Long)]): RDD[(Long, Long)] = {
+          assert(remaining >= 0, "Whoops - we have overshot by " + (-remaining) + " elements!")
+          println("in mtr with " + remaining + " remaining")
+          if (remaining == 0) currRDD
+          else {
+            i += 1
+            val newRDD = uniformRDD(sc, remaining, ((n / Int.MaxValue) + 1).toInt)
+            val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
               .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
-          val unionedRDD = currRDD.union(newPairRDD).distinct
-          makeTheRest(n - unionedRDD.count, unionedRDD)
+            val unionedRDD = currRDD.union(newPairRDD).distinct
+            makeTheRest(n - unionedRDD.count, unionedRDD)
+          }
         }
+
+        val initialRDD = uniformRDD(sc, n, ((n / Int.MaxValue) + 1).toInt)
+          .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+          .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
+
+        makeTheRest(n - initialRDD.count, initialRDD)
       }
-
-      val initialRDD = uniformRDD(sc, n, ((n / Int.MaxValue) + 1).toInt)
-        .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
-        .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
-
-      makeTheRest(n - initialRDD.count, initialRDD)
     }
 
     /**
@@ -345,7 +350,7 @@ object GraphXHelper {
       val maxPossibleEdges = nv * (nv-1)
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val edgeRDD = if (ne < maxPossibleEdges * 0.62)
+      val edgeRDD = if (ne < maxPossibleEdges * densityCutoff)
         makePairs(ne, nv).map(p => Edge(p._1, p._2, ()))
       else {    // dense graph
         val allPairs = allPairsRDD(nv)
@@ -365,7 +370,8 @@ object GraphXHelper {
       val maxPossibleEdges = nv * (nv-1) / 2
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
-      val edgeRDD = if (ne < maxPossibleEdges * 0.62)
+      println("ne = " + ne, "mPE * " + densityCutoff + " = " + (maxPossibleEdges * densityCutoff))
+      val edgeRDD = if (ne < maxPossibleEdges * densityCutoff)
           makePairs(ne, nv, ordered = true).map(p => Edge(p._1, p._2, ()))
       else {        // dense graph
         val allPairs = allPairsRDD(nv).filter(p => p._1 > p._2)
@@ -450,9 +456,9 @@ object GraphXHelper {
     val sc = new SparkContext(conf)
     val r = new scala.util.Random
 
-    def runOneDiGraphTest(): Unit = {
-      val nv = r.nextInt(1000)
-      val ne = r.nextInt(nv) * r.nextInt(nv)
+    def runOneDiGraphTest(n:Int): Unit = {
+      val nv = 2.max(r.nextInt(n))
+      val ne = 1.max(r.nextInt(nv) * r.nextInt(nv))
       println("running digraph with (" + nv + ", " + ne + ")")
       val g = sc.randomDiGraph(nv, ne)
       val vct = g.vertices.count()
@@ -461,9 +467,9 @@ object GraphXHelper {
       assert(ect == ne, "ect " + ect + " != ne " + ne)
     }
 
-    def runOneGraphTest(): Unit = {
-      val nv = r.nextInt(1000)
-      val ne = r.nextInt(nv) * r.nextInt(nv) / 2 - 1
+    def runOneGraphTest(n:Int): Unit = {
+      val nv = 2.max(r.nextInt(n))
+      val ne = 1.max(r.nextInt(nv) * r.nextInt(nv) / 2)
       println("running graph with (" + nv + ", " + ne + ")")
       val g = sc.randomGraph(nv, ne)
       val vct = g.vertices.count()
@@ -473,9 +479,9 @@ object GraphXHelper {
     }
 
 
-    0.until(10).foreach(i => {
-      runOneDiGraphTest()
-      runOneGraphTest()
+    1.to(80).foreach(i => {
+      runOneDiGraphTest(10 * i)
+      runOneGraphTest(10 * i)
       println("Test " + i + " ok")
     })
   }
