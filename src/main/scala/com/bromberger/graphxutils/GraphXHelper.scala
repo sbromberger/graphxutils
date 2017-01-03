@@ -25,11 +25,6 @@ object GraphXHelper {
     result
   }
 
-  implicit class EdgeAdditions[ED:ClassTag](e: Edge[ED]) {
-    def reverse(xform: ED => ED): Edge[ED] = Edge(e.dstId , e.srcId, xform(e.attr))
-    def reverse: Edge[ED] = reverse(identity[ED])
-  }
-
   implicit class GraphXAdditions[VD:ClassTag, ED:ClassTag](g: Graph[VD, ED]) extends Serializable {
     def Graph(tripletRDD: RDD[EdgeTriplet[VD, ED]]): org.apache.spark.graphx.Graph[VD, ED] = {
       val nodes = tripletRDD.flatMap(t => List((t.srcId, t.srcAttr), (t.dstId, t.dstAttr))).distinct
@@ -37,12 +32,10 @@ object GraphXHelper {
       org.apache.spark.graphx.Graph(nodes, edges)
     }
 
-    def toUndirected: Graph[VD, ED] = {
-      val reve = g.edges.map(e => e.reverse)
-      org.apache.spark.graphx.Graph(g.vertices, g.edges.union(reve))
-    }
+    def toUndirected: Graph[VD, ED] =
+      org.apache.spark.graphx.Graph[VD, ED](g.vertices, g.edges.union(g.edges.reverse))
 
-    val emptyVertexRDD: RDD[VD] = g.vertices.sparkContext.emptyRDD[VD]
+    val emptyVertexRDD: RDD[VertexId] = g.vertices.sparkContext.emptyRDD[VertexId]
     val emptyEdgeRDD: RDD[Edge[ED]] = g.edges.sparkContext.emptyRDD[Edge[ED]]
     val emptyTripletRDD: RDD[EdgeTriplet[VD, ED]] = g.triplets.sparkContext.emptyRDD[EdgeTriplet[VD, ED]]
 
@@ -168,54 +161,150 @@ object GraphXHelper {
       pregelRun.vertices.map(v => v._1 -> v._2._2)
     }
 
-    case class ParentDist(parent:VertexId, dist:Long) {
-      def next = ParentDist(parent, dist + 1)
-      def <(that:ParentDist): Boolean = dist < that.dist
-      def min(that:ParentDist): ParentDist = if (dist < that.dist) this else that
-      override def toString:String = "distance " + dist + ", parent " + parent
+    case class NextHopsDist(nextHops: Set[VertexId], dist: Long) {
+      def next = NextHopsDist(nextHops, dist + 1)
+
+      def <(that: NextHopsDist): Boolean = dist < that.dist
+
+      def min(that: NextHopsDist): NextHopsDist = if (dist < that.dist) this else that
+
+      override def toString: String = "distance " + dist + ", parents " + nextHops
     }
 
-    def allPairsShortestPaths(distFn: Edge[ED] => Double = e => 1): RDD[(VertexId, Map[VertexId, ParentDist])] = {
-      val initialMsg = Map(-1L -> ParentDist(-1L, -1L))
-      val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, ParentDist](vid -> ParentDist(vid, 0L)))).reverse
-      def vprog(v: VertexId, value: (VD, Map[VertexId, ParentDist]), message: Map[VertexId, ParentDist]): (VD, Map[VertexId, ParentDist]) = {
+    def allPairsShortestPaths(distFn: Edge[ED] => Double = e => 1): RDD[(VertexId, Map[VertexId, NextHopsDist])] = {
+      val initialMsg = Map(-1L -> NextHopsDist(Set.empty, -1L))
+      val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, NextHopsDist](vid -> NextHopsDist(Set(vid), 0L)))).reverse.partitionBy(PartitionStrategy.EdgePartition2D, numPartitions=128)
+
+      def vprog(v: VertexId, value: (VD, Map[VertexId, NextHopsDist]), message: Map[VertexId, NextHopsDist]): (VD, Map[VertexId, NextHopsDist]) = {
         if (v == 0) println("--- NEW ITERATION ---")
-        val updatedValues = mergeMsg(value._2, message).filter(v => v._2.dist >= 0)
+//        println("vprog: value._2 = " + value._2 + ", message = " + message)
+        val updatedValues = mergeMsg(value._2, message).filter(v => v._2.dist >= 0L)
+//        println("vprog: updatedValues = " + updatedValues)
         (value._1, updatedValues)
       }
 
-      def sendMsg(triplet: EdgeTriplet[(VD, Map[VertexId, ParentDist]), ED]): Iterator[(VertexId, Map[VertexId, ParentDist])] = {
+      def sendMsg(triplet: EdgeTriplet[(VD, Map[VertexId, NextHopsDist]), ED]): Iterator[(VertexId, Map[VertexId, NextHopsDist])] = {
         val dstVertexId = triplet.dstId
         val srcMap = triplet.srcAttr._2
-        val dstMap = triplet.dstAttr._2  // guaranteed to have dstVertexId as a key
+        val dstMap = triplet.dstAttr._2 // guaranteed to have dstVertexId as a key
 
-        val updatesToSend : Map[VertexId, ParentDist] = srcMap.filter {
+//        println(" srcMap = " + srcMap)
+        val updatesToSend: Map[VertexId, NextHopsDist] = srcMap.filter {
           case (vid, srcPD) => dstMap.get(vid) match {
-            case Some(dstPD) => dstPD.dist > srcPD.dist + 1  && dstPD.parent != triplet.srcId  // if it exists, is it a new, cheaper path?
+            case Some(dstPD) =>
+              dstPD.dist > srcPD.dist + 1 && !dstPD.nextHops.contains(triplet.srcId) // if it exists, is it a new, cheaper path?
             case _ => true // not found - new update
           }
-        }.map(u => u._1 -> ParentDist(triplet.srcId, u._2.dist +1))
+        }.map(u => u._1 -> NextHopsDist(Set(triplet.srcId), u._2.dist + 1))
 
         if (updatesToSend.nonEmpty) {
-          println("sending " + updatesToSend.size + " messages from " + triplet.srcId + " to " + dstVertexId)
-          updatesToSend.keys.foreach(k => println("  " + k + " -> " + updatesToSend(k)))
-          Iterator[(VertexId, Map[VertexId, ParentDist])]((dstVertexId, updatesToSend))
+//          println("sending " + updatesToSend.size + " messages from " + triplet.srcId + " to " + dstVertexId)
+//          updatesToSend.keys.foreach(k => println("  " + k + " -> " + updatesToSend(k)))
+          Iterator[(VertexId, Map[VertexId, NextHopsDist])]((dstVertexId, updatesToSend))
         }
-        else
+        else {
+//          println("no updates to send for vertex " + triplet.srcId + " to " + dstVertexId)
           Iterator.empty
+        }
       }
 
-      def mergeMsg(m1: Map[VertexId, ParentDist], m2: Map[VertexId, ParentDist]): Map[VertexId, ParentDist] = {
+      def mergeMsg(m1: Map[VertexId, NextHopsDist], m2: Map[VertexId, NextHopsDist]): Map[VertexId, NextHopsDist] = {
 
-        def mergeOption[A](o1: Option[A], o2: Option[A])(f: (A, A) => A): A = if (o1.isDefined && o2.isDefined) f(o1.get, o2.get) else o1.orElse(o2).get
-        def mergeMap[A, B](m1: Map[A, B], m2: Map[A, B])(f: (B, B) => B) = (m1.keySet ++ m2.keySet).iterator.map(k => (k, mergeOption(m1.get(k), m2.get(k))(f))).toMap
+//        def mergeOption[A](o1: Option[A], o2: Option[A])(f: (A, A) => A): A = if (o1.isDefined && o2.isDefined) f(o1.get, o2.get) else o1.orElse(o2).get
+//        def mergeMap[A, B](m1: Map[A, B], m2: Map[A, B])(f: (B, B) => B) = (m1.keySet ++ m2.keySet).iterator.map(k => (k, mergeOption(m1.get(k), m2.get(k))(f))).toMap
 
-        mergeMap(m1, m2)(_ min _)
+        val m1k = m1.keySet
+        val m2k = m2.keySet
+        val allk = m1k.union(m2k)
+        val merged: Map[VertexId, NextHopsDist] = allk.foldLeft(Map[VertexId, NextHopsDist]())((acc, k) => {
+          val m1key = m1.get(k)
+          val m2key = m2.get(k)
+          (m1key, m2key) match {
+            case (Some(m1nh), Some(m2nh)) => // vertex is in both
+              val m1dist = m1nh.dist
+              val m2dist = m2nh.dist
+              if (m1dist == m2dist)       // same distances! merge the nexthopsdist
+                acc.updated(k, NextHopsDist(m1nh.nextHops ++ m2nh.nextHops, m1dist))
+              else if (m1dist < m2dist)
+                acc.updated(k, m1nh)
+              else
+                acc.updated(k, m2nh)
+
+            case (Some(m1nh), None) => acc.updated(k, m1nh)
+            case (None, Some(m2nh)) => acc.updated(k, m2nh)
+            case _  => acc    // we should never get here
+          }
+        })
+        merged
       }
 
       val pregelRun = pregelg.pregel(initialMsg)(vprog, sendMsg, mergeMsg)
       val sps = pregelRun.vertices.map(v => v._1 -> v._2._2)
+
       sps
+    }
+
+    def buildShortestPaths: Map[VertexId, Map[VertexId, Set[List[VertexId]]]] = {
+      // COLLECT HAPPENS HERE
+      val sps = g.allPairsShortestPaths().collectAsMap.toMap
+//      println("sps = " + sps)
+      // [src -> [(dst, parentdist)]]
+      sps.foldLeft(Map[VertexId, Map[VertexId, Set[List[VertexId]]]]())((acc, sp) => {
+        val (src, allDsts) = sp
+//        println("bsp: src = " + src + ", allDsts = " + allDsts)
+        def createPaths(vFrom: VertexId, vTo: VertexId): Set[List[VertexId]] = {
+          def _createPaths(vFrom: VertexId, vTo: VertexId, currPaths: Set[List[VertexId]]): Set[List[VertexId]] = {
+            if (vTo == vFrom) currPaths
+            else {
+              val nextHops = sps(vFrom)(vTo).nextHops
+              nextHops.map(nh => _createPaths(nh, vTo, if (currPaths.isEmpty) Set(List(nh)) else currPaths.map(cp => cp :+ nh))).reduce(_ union _)
+            }
+          }
+          _createPaths(vFrom, vTo, Set(List(vFrom)))
+        }
+
+
+        val allPathsOneSrc = allDsts.foldLeft(Map[VertexId, Set[List[VertexId]]]())((acc, dst) => {
+          val spForSrc = createPaths(src, dst._1)
+          acc.updated(dst._1, spForSrc)
+        })
+        acc.updated(sp._1, allPathsOneSrc)
+      })
+    }
+
+    /**
+      *
+      * @param endpoints  true if endpoints should be included in centrality calculation; otherwise false. Default: false
+      * @param normalize  true if centrality measures should be normalized by (nv-1)(nv-2); false otherwise. Default: true. Note:
+      *                   normalization assumes that the graph is directed. For undirected normalization, divide centrality
+      *                   calculations by 2.
+      * @return           Map of vertexId to centrality measure.
+      */
+    def betweennessCentrality(endpoints:Boolean = false, normalize:Boolean = true): Map[VertexId, Double] = {
+      val shortestPaths = g.buildShortestPaths
+      var bcMap = scala.collection.mutable.Map[VertexId, Double]()
+      g.vertices.collect.foreach(v => bcMap.update(v._1, 0.0))
+
+      shortestPaths.foreach(pathsForVertex => {
+        val (src, dsts) = pathsForVertex
+        dsts.foreach(dstpaths => {
+          val (dst, paths) = dstpaths
+          paths.foreach(path => {
+            val pathToUse = if (endpoints) path else path.drop(1).dropRight(1)
+            pathToUse.foreach(v => {
+
+              bcMap(v) += 1.0 / paths.size
+//              println("v = " + v + ", src = " + src + ", dst = " + dst + ", paths.size = " + paths.size + ", bc(v) = " + bcMap(v))
+            })
+          })
+
+        })
+
+      })
+
+      val nv = g.vertices.count
+      val scaleFactor = if (normalize) (nv - 1) * (nv - 2) else 1
+      bcMap.toMap.map(l => l._1 -> l._2 / scaleFactor)
     }
   }
 
@@ -314,7 +403,7 @@ object GraphXHelper {
       if (n == 0) sc.parallelize(List[(Long, Long)]())
       else {
         val nv2 = nv * nv
-        var i = 0
+//        var i = 0
 
         @tailrec
         def makeTheRest(remaining: Long, currRDD: RDD[(Long, Long)]): RDD[(Long, Long)] = {
@@ -322,8 +411,8 @@ object GraphXHelper {
           println("in mtr with " + remaining + " remaining")
           if (remaining == 0) currRDD
           else {
-            i += 1
-            val newRDD = uniformRDD(sc, remaining, ((n / Int.MaxValue) + 1).toInt)
+//            i += 1
+            val newRDD = uniformRDD(sc, remaining)
             val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
               .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
             val unionedRDD = currRDD.union(newPairRDD).distinct
@@ -331,7 +420,7 @@ object GraphXHelper {
           }
         }
 
-        val initialRDD = uniformRDD(sc, n, ((n / Int.MaxValue) + 1).toInt)
+        val initialRDD = uniformRDD(sc, n)
           .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
           .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
 
@@ -380,7 +469,8 @@ object GraphXHelper {
         val pairsToRemove = undirectedPairsToRemove.union(undirectedPairsToRemove.map(p => p.swap))
         allPairs.subtract(pairsToRemove).map(p => Edge(p._1, p._2, ()))
       }
-      Graph(nodes, edgeRDD.union(edgeRDD.map(e => e.reverse)))
+      val uniG = Graph(nodes, edgeRDD)
+      uniG.toUndirected
     }
 
     /**
