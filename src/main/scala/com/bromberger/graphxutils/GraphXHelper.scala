@@ -244,6 +244,17 @@ object GraphXHelper {
       sps
     }
 
+    case class pathToDst(dst:VertexId, path: Vector[VertexId])
+
+
+    type dstPaths = Map[VertexId, Set[Vector[VertexId]]]
+    def buildShortestPathsPregel = {
+
+      val sps = g.allPairsShortestPaths()
+      val spsg = g.mapVertices(_ => sps)
+      val newg = g.mapVertices((vid, vd) => dstPaths)
+
+    }
     def buildShortestPaths: Map[VertexId, Map[VertexId, Set[List[VertexId]]]] = {
       // COLLECT HAPPENS HERE
       val sps = g.allPairsShortestPaths().collectAsMap.toMap
