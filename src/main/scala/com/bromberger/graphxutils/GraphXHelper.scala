@@ -2,11 +2,10 @@ package com.bromberger.graphxutils
 
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.graphx._
+import org.apache.spark.graphx.{Edge, EdgeTriplet, VertexId, Graph, PartitionStrategy}
 import org.apache.spark.mllib.random.RandomRDDs.uniformRDD
 import org.apache.spark.rdd.RDD
 
-import scala.annotation.tailrec
 import scala.collection.immutable.Map
 import scala.reflect.ClassTag
 
@@ -170,7 +169,7 @@ object GraphXHelper {
     }
 
     case class NextHopsDist(nextHops: Set[VertexId], dist: Long) {
-      def next = NextHopsDist(nextHops, dist + 1)
+      def next: NextHopsDist = NextHopsDist(nextHops, dist + 1)
 
       def <(that: NextHopsDist): Boolean = dist < that.dist
 
@@ -179,7 +178,7 @@ object GraphXHelper {
       override def toString: String = "distance " + dist + ", parents " + nextHops
     }
 
-    def allPairsShortestPaths(distFn: Edge[ED] => Double = e => 1): RDD[(VertexId, Map[VertexId, NextHopsDist])] = {
+    def allPairsShortestPaths(distFn: Edge[ED] => Double = _ => 1): RDD[(VertexId, Map[VertexId, NextHopsDist])] = {
       val initialMsg = Map(-1L -> NextHopsDist(Set.empty, -1L))
       val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, NextHopsDist](vid -> NextHopsDist(Set(vid), 0L)))).reverse.partitionBy(PartitionStrategy.EdgePartition2D, numPartitions=128)
 
@@ -290,13 +289,13 @@ object GraphXHelper {
       */
     def betweennessCentrality(endpoints:Boolean = false, normalize:Boolean = true): Map[VertexId, Double] = {
       val shortestPaths = g.buildShortestPaths
-      var bcMap = scala.collection.mutable.Map[VertexId, Double]()
+      val bcMap = scala.collection.mutable.Map[VertexId, Double]()
       g.vertices.collect.foreach(v => bcMap.update(v._1, 0.0))
 
       shortestPaths.foreach(pathsForVertex => {
-        val (src, dsts) = pathsForVertex
+        val (_, dsts) = pathsForVertex
         dsts.foreach(dstpaths => {
-          val (dst, paths) = dstpaths
+          val (_, paths) = dstpaths
           paths.foreach(path => {
             val pathToUse = if (endpoints) path else path.drop(1).dropRight(1)
             pathToUse.foreach(v => {
@@ -344,7 +343,7 @@ object GraphXHelper {
       val r = 0L.until(n)
       val rLen = r.length - 1
       val nodes = makeNodes(n)
-      val edges: RDD[Edge[Unit]] = sc.parallelize(0.until(rLen).map(i => Edge(r(i), r(i+1), ())))
+      val edges: RDD[Edge[Unit]] = sc.parallelize(0.until(rLen).map(i => Edge(r(i), r(i + 1), ())))
       Graph(nodes, edges)
     }
 
