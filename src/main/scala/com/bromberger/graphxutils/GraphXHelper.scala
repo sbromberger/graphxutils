@@ -17,7 +17,7 @@ import scala.reflect.ClassTag
 
 object GraphXHelper {
 
-  private def time[R](block: => R): R = {
+  def time[R](block: => R): R = {
     val t0 = System.nanoTime()
     val result = block    // call-by-name
     val t1 = System.nanoTime()
@@ -25,7 +25,15 @@ object GraphXHelper {
     result
   }
 
-  implicit class GraphXAdditions[VD:ClassTag, ED:ClassTag](g: Graph[VD, ED]) extends Serializable {
+  implicit class RDDAdditions[T: ClassTag](rdd: RDD[T]) extends Serializable {
+    /**
+      * Returns an RDD that represents a fixed-length subset of the original.
+      * @param n  Number of elements in the RDD to limit
+      * @return   an RDD of size `n`
+      */
+    def truncate(n: Long): RDD[T] = rdd.zipWithIndex.collect{case (v: T, i: Long) if i < n => v}
+  }
+  implicit class GraphXAdditions[VD: ClassTag, ED: ClassTag](g: Graph[VD, ED]) extends Serializable {
     def Graph(tripletRDD: RDD[EdgeTriplet[VD, ED]]): org.apache.spark.graphx.Graph[VD, ED] = {
       val nodes = tripletRDD.flatMap(t => List((t.srcId, t.srcAttr), (t.dstId, t.dstAttr))).distinct
       val edges = tripletRDD.map(t => Edge[ED](t.srcId, t.dstId, t.attr))
@@ -399,35 +407,15 @@ object GraphXHelper {
       * @param nv   The maximum value for each element in the pair
       * @param ordered  True if the pairs should be ordered
       */
-    private def makePairs(n:Long, nv: Long, ordered: Boolean = false): RDD[(Long, Long)] = {
-      if (n == 0) sc.parallelize(List[(Long, Long)]())
-      else {
-        val nv2 = nv * nv
-//        var i = 0
+    private def makePairs(n:Long, nv:Long, ordered: Boolean = false): RDD[(Long, Long)] = {
+      val nv2 = nv * nv
+      val initialRDD = uniformRDD(sc, 20L.max(n * 2))
+        .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
+        .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct.truncate(n)
 
-        @tailrec
-        def makeTheRest(remaining: Long, currRDD: RDD[(Long, Long)]): RDD[(Long, Long)] = {
-          assert(remaining >= 0, "Whoops - we have overshot by " + (-remaining) + " elements!")
-          println("in mtr with " + remaining + " remaining")
-          if (remaining == 0) currRDD
-          else {
-//            i += 1
-            val newRDD = uniformRDD(sc, remaining)
-            val newPairRDD = newRDD.map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
-              .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
-            val unionedRDD = currRDD.union(newPairRDD).distinct
-            makeTheRest(n - unionedRDD.count, unionedRDD)
-          }
-        }
-
-        val initialRDD = uniformRDD(sc, n)
-          .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
-          .map(p => if (ordered && (p._1 > p._2)) p.swap else p).distinct
-
-        makeTheRest(n - initialRDD.count, initialRDD)
-      }
+      assert(initialRDD.count == n, "Length mismatch: expected " + n + ", received " + initialRDD.count)
+      initialRDD
     }
-
     /**
       * A directed graph of a given order and size, with randomly-generated edges.
       * Note: the graph will not contain self-loops.
@@ -547,8 +535,8 @@ object GraphXHelper {
     val r = new scala.util.Random
 
     def runOneDiGraphTest(n:Int): Unit = {
-      val nv = 2.max(r.nextInt(n))
-      val ne = 1.max(r.nextInt(nv) * r.nextInt(nv))
+      val nv = 3.max(r.nextInt(n))
+      val ne = 2.max(r.nextInt(nv) * r.nextInt(nv))
       println("running digraph with (" + nv + ", " + ne + ")")
       val g = sc.randomDiGraph(nv, ne)
       val vct = g.vertices.count()
@@ -558,8 +546,8 @@ object GraphXHelper {
     }
 
     def runOneGraphTest(n:Int): Unit = {
-      val nv = 2.max(r.nextInt(n))
-      val ne = 1.max(r.nextInt(nv) * r.nextInt(nv) / 2)
+      val nv = 3.max(r.nextInt(n))
+      val ne = 2.max(r.nextInt(nv) * r.nextInt(nv) / 2)
       println("running graph with (" + nv + ", " + ne + ")")
       val g = sc.randomGraph(nv, ne)
       val vct = g.vertices.count()
