@@ -13,6 +13,25 @@ import scala.reflect.ClassTag
  * Created by sbromberger on 2016-11-19.
  */
 
+object SG {
+  private def makeNodesFrom(r:Seq[Long])(implicit sc:SparkContext): RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v, ())))
+  private def makeNodes(n:Long)(implicit sc:SparkContext): RDD[(VertexId, Unit)] = makeNodesFrom(0L.until(n))
+
+  private def makeEdgesFrom(s:Seq[(Long, Long)])(implicit sc:SparkContext): RDD[Edge[Unit]] =
+    sc.parallelize(s.map(e => Edge(e._1, e._2, ())))
+  /**
+    * A directed cycle graph with a given number of nodes.
+    * @param n    Number of nodes in the circle graph.
+    * @return     A GraphX graph
+    */
+  def cycleDG(n:Long)(implicit sc:SparkContext): Graph[Unit, Unit] = {
+    val r = 0L.until(n)
+    val nodes = makeNodes(n)
+    val edges : RDD[Edge[Unit]] = sc.parallelize(r.map(n => Edge(n, r.start + (n-r.start +1) % r.length, ())))
+    Graph(nodes, edges)
+  }
+
+}
 
 object GraphXHelper {
 
@@ -183,10 +202,7 @@ object GraphXHelper {
       val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, NextHopsDist](vid -> NextHopsDist(Set(vid), 0L)))).reverse.partitionBy(PartitionStrategy.EdgePartition2D, numPartitions=128)
 
       def vprog(v: VertexId, value: (VD, Map[VertexId, NextHopsDist]), message: Map[VertexId, NextHopsDist]): (VD, Map[VertexId, NextHopsDist]) = {
-        if (v == 0) println("--- NEW ITERATION ---")
-//        println("vprog: value._2 = " + value._2 + ", message = " + message)
         val updatedValues = mergeMsg(value._2, message).filter(v => v._2.dist >= 0L)
-//        println("vprog: updatedValues = " + updatedValues)
         (value._1, updatedValues)
       }
 
@@ -195,7 +211,6 @@ object GraphXHelper {
         val srcMap = triplet.srcAttr._2
         val dstMap = triplet.dstAttr._2 // guaranteed to have dstVertexId as a key
 
-//        println(" srcMap = " + srcMap)
         val updatesToSend: Map[VertexId, NextHopsDist] = srcMap.filter {
           case (vid, srcPD) => dstMap.get(vid) match {
             case Some(dstPD) =>
@@ -204,22 +219,11 @@ object GraphXHelper {
           }
         }.map(u => u._1 -> NextHopsDist(Set(triplet.srcId), u._2.dist + 1))
 
-        if (updatesToSend.nonEmpty) {
-//          println("sending " + updatesToSend.size + " messages from " + triplet.srcId + " to " + dstVertexId)
-//          updatesToSend.keys.foreach(k => println("  " + k + " -> " + updatesToSend(k)))
-          Iterator[(VertexId, Map[VertexId, NextHopsDist])]((dstVertexId, updatesToSend))
-        }
-        else {
-//          println("no updates to send for vertex " + triplet.srcId + " to " + dstVertexId)
-          Iterator.empty
-        }
+        if (updatesToSend.nonEmpty) Iterator[(VertexId, Map[VertexId, NextHopsDist])]((dstVertexId, updatesToSend))
+        else Iterator.empty
       }
 
       def mergeMsg(m1: Map[VertexId, NextHopsDist], m2: Map[VertexId, NextHopsDist]): Map[VertexId, NextHopsDist] = {
-
-//        def mergeOption[A](o1: Option[A], o2: Option[A])(f: (A, A) => A): A = if (o1.isDefined && o2.isDefined) f(o1.get, o2.get) else o1.orElse(o2).get
-//        def mergeMap[A, B](m1: Map[A, B], m2: Map[A, B])(f: (B, B) => B) = (m1.keySet ++ m2.keySet).iterator.map(k => (k, mergeOption(m1.get(k), m2.get(k))(f))).toMap
-
         val m1k = m1.keySet
         val m2k = m2.keySet
         val allk = m1k.union(m2k)
@@ -254,11 +258,8 @@ object GraphXHelper {
     def buildShortestPaths: Map[VertexId, Map[VertexId, Set[List[VertexId]]]] = {
       // COLLECT HAPPENS HERE
       val sps = g.allPairsShortestPaths().collectAsMap.toMap
-//      println("sps = " + sps)
-      // [src -> [(dst, parentdist)]]
       sps.foldLeft(Map[VertexId, Map[VertexId, Set[List[VertexId]]]]())((acc, sp) => {
         val (src, allDsts) = sp
-//        println("bsp: src = " + src + ", allDsts = " + allDsts)
         def createPaths(vFrom: VertexId, vTo: VertexId): Set[List[VertexId]] = {
           def _createPaths(vFrom: VertexId, vTo: VertexId, currPaths: Set[List[VertexId]]): Set[List[VertexId]] = {
             if (vTo == vFrom) currPaths
@@ -301,12 +302,9 @@ object GraphXHelper {
             pathToUse.foreach(v => {
 
               bcMap(v) += 1.0 / paths.size
-//              println("v = " + v + ", src = " + src + ", dst = " + dst + ", paths.size = " + paths.size + ", bc(v) = " + bcMap(v))
             })
           })
-
         })
-
       })
 
       val nv = g.vertices.count
@@ -315,19 +313,19 @@ object GraphXHelper {
     }
   }
 
-  implicit class SmallGraphs(sc: SparkContext) {
+  object SmallGraphs {
     private val densityCutoff = 0.62
-    private def makeNodesFrom(r:Seq[Long]) : RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v, ())))
-    private def makeNodes(n:Long) : RDD[(VertexId, Unit)] = makeNodesFrom(0L.until(n))
+    private def makeNodesFrom(r:Seq[Long])(implicit sc: SparkContext): RDD[(VertexId, Unit)] = sc.parallelize(r.map(v => (v, ())))
+    private def makeNodes(n:Long)(implicit sc: SparkContext) : RDD[(VertexId, Unit)] = makeNodesFrom(0L.until(n))
 
-    private def makeEdgesFrom(s:Seq[(Long, Long)]): RDD[Edge[Unit]] =
+    private def makeEdgesFrom(s:Seq[(Long, Long)])(implicit sc: SparkContext): RDD[Edge[Unit]] =
       sc.parallelize(s.map(e => Edge(e._1, e._2, ())))
     /**
       * A directed cycle graph with a given number of nodes.
       * @param n    Number of nodes in the circle graph.
       * @return     A GraphX graph
       */
-    def cycleDiGraph(n:Long): Graph[Unit, Unit] = {
+    def cycleDiGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val r = 0L.until(n)
       val nodes = makeNodes(n)
       val edges : RDD[Edge[Unit]] = sc.parallelize(r.map(n => Edge(n, r.start + (n-r.start +1) % r.length, ())))
@@ -339,7 +337,7 @@ object GraphXHelper {
       * @param n    Length of the path graph
       * @return     A GraphX graph
       */
-    def pathDiGraph(n:Long): Graph[Unit, Unit] = {
+    def pathDiGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val r = 0L.until(n)
       val rLen = r.length - 1
       val nodes = makeNodes(n)
@@ -352,7 +350,7 @@ object GraphXHelper {
       * @param n  Number of nodes in the wheel graph, including the center node
       * @return   A GraphX graph
       */
-    def wheelDiGraph(n:Long): Graph[Unit, Unit] = {
+    def wheelDiGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val wheel = cycleDiGraph(n-1)
       val nodes = makeNodes(n)
       val spokes: RDD[Edge[Unit]] = wheel.vertices.map(v => Edge(n - 1, v._1))
@@ -364,7 +362,7 @@ object GraphXHelper {
       * A directed house graph
       * @return   A Graphx graph
       */
-    def houseDiGraph: Graph[Unit, Unit] = {
+    def houseDiGraph(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val e: List[(Long, Long)] = List((0, 1), (0, 2), (1, 3), (2, 4), (3, 4))
       val edges = makeEdgesFrom(e)
       val nodes = makeNodes(5)
@@ -376,7 +374,7 @@ object GraphXHelper {
       * @param n    The number of nodes, including the center vertex
       * @return     A GraphX graph
       */
-    def starDiGraph(n:Long): Graph[Unit, Unit] = {
+    def starDiGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
       val e = 1L.until(n).map(v => (0L, v))
       val edges = makeEdgesFrom(e)
@@ -388,7 +386,7 @@ object GraphXHelper {
       * @param depth    The depth of the binary tree
       * @return         A GraphX graph
       */
-    def binaryTreeDiGraph(depth:Long): Graph[Unit, Unit] = {
+    def binaryTreeDiGraph(depth:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val nNodes = Math.pow(2L, depth).toLong - 1L
       val nodes = makeNodes(nNodes)
       val e = depth.until(1).by(-1).flatMap(d => {
@@ -406,7 +404,7 @@ object GraphXHelper {
       * @param nv   The maximum value for each element in the pair
       * @param ordered  True if the pairs should be ordered
       */
-    private def makePairs(n:Long, nv:Long, ordered: Boolean = false): RDD[(Long, Long)] = {
+    private def makePairs(n:Long, nv:Long, ordered: Boolean = false)(implicit sc: SparkContext): RDD[(Long, Long)] = {
       val nv2 = nv * nv
       val initialRDD = uniformRDD(sc, 20L.max(n * 2))
         .map(v => (nv2 * v).toLong).map(v => (v / nv, v % nv)).filter(p => p._1 != p._2)
@@ -422,7 +420,7 @@ object GraphXHelper {
       * @param ne   The number of random directed edges / arcs to include in the graph
       * @return     A GraphX graph
       */
-    def randomDiGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
+    def randomDiGraph(nv:Long, ne:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val maxPossibleEdges = nv * (nv-1)
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
@@ -442,7 +440,7 @@ object GraphXHelper {
       * @param ne   The number of undirected random edges to include in the graph
       * @return     A GraphX graph
       */
-    def randomGraph(nv:Long, ne:Long): Graph[Unit, Unit] = {
+    def randomGraph(nv:Long, ne:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val maxPossibleEdges = nv * (nv-1) / 2
       assert(ne <= maxPossibleEdges, "Number of edges requested (" + ne + ") exceeds maximum possible (" + maxPossibleEdges + ")")
       val nodes = makeNodes(nv)
@@ -465,7 +463,7 @@ object GraphXHelper {
       * @param n  Number of vertices
       * @return   an RDD of Pairs
       */
-    private def allPairsRDD(n:Long): RDD[(Long, Long)] = {
+    private def allPairsRDD(n:Long)(implicit sc: SparkContext): RDD[(Long, Long)] = {
       val nRDD = sc.parallelize(0L.until(n))
       nRDD.cartesian(nRDD).filter(p => p._1 != p._2)
     }
@@ -475,7 +473,7 @@ object GraphXHelper {
       * @param n  The number of vertices in the graph
       * @return   A GraphX graph
       */
-    def completeGraph(n:Long): Graph[Unit, Unit] = {
+    def completeGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = {
       val nodes = makeNodes(n)
       val edges = allPairsRDD(n).map(p => Edge(p._1, p._2, ()))
 
@@ -487,41 +485,41 @@ object GraphXHelper {
       * @param n  Length of the path graph
       * @return   A GraphX graph
       */
-    def pathGraph(n:Long): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
+    def pathGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = pathDiGraph(n).toUndirected
 
     /**
       * An undirected cycle graph with a given number of nodes.
       * @param n    Number of nodes in the graph
       * @return     A GraphX graph
       */
-    def cycleGraph(n:Long): Graph[Unit, Unit] = cycleDiGraph(n).toUndirected
+    def cycleGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = cycleDiGraph(n).toUndirected
 
     /**
       * An undirected wheel graph with a given number of nodes. VertexId 0 is the center node.
       * @param n    Number of nodes in the graph, including the center node
       * @return     A GraphX graph
       */
-    def wheelGraph(n:Long): Graph[Unit, Unit] = wheelDiGraph(n).toUndirected
+    def wheelGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = wheelDiGraph(n).toUndirected
 
     /**
       * An undirected house graph.
       * @return     A GraphX graph
       */
-    def houseGraph: Graph[Unit, Unit] = houseDiGraph.toUndirected
+    def houseGraph(implicit sc: SparkContext): Graph[Unit, Unit] = houseDiGraph.toUndirected
 
     /**
       * An undirected star graph with a given number of nodes. VertexId 0 is the center node.
       * @param n    The number of nodes, including the center vertex
       * @return     A GraphX graph
       */
-    def starGraph(n:Long): Graph[Unit, Unit] = starDiGraph(n).toUndirected
+    def starGraph(n:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = starDiGraph(n).toUndirected
 
     /**
       * An undirected full binary tree of a given depth. VertexId 0 is the root node.
       * @param depth    The depth of the binary tree
       * @return         A GraphX graph
       */
-    def binaryTreeGraph(depth:Long): Graph[Unit, Unit] = binaryTreeDiGraph(depth).toUndirected
+    def binaryTreeGraph(depth:Long)(implicit sc: SparkContext): Graph[Unit, Unit] = binaryTreeDiGraph(depth).toUndirected
   }
 
 
@@ -530,14 +528,14 @@ object GraphXHelper {
     Logger.getLogger("org").setLevel(Level.ERROR)
     Logger.getLogger("bromberger").setLevel(Level.WARN)
     val conf = new SparkConf().setAppName("test").setMaster("local[*]")
-    val sc = new SparkContext(conf)
+    implicit val sc = new SparkContext(conf)
     val r = new scala.util.Random
 
     def runOneDiGraphTest(n:Int): Unit = {
       val nv = 3.max(r.nextInt(n))
       val ne = 2.max(r.nextInt(nv) * r.nextInt(nv))
       println("running digraph with (" + nv + ", " + ne + ")")
-      val g = sc.randomDiGraph(nv, ne)
+      val g = SmallGraphs.randomDiGraph(nv, ne)
       val vct = g.vertices.count()
       val ect = g.edges.count()
       assert(vct == nv, "vct " + vct + " != nv " + nv)
@@ -548,13 +546,12 @@ object GraphXHelper {
       val nv = 3.max(r.nextInt(n))
       val ne = 2.max(r.nextInt(nv) * r.nextInt(nv) / 2)
       println("running graph with (" + nv + ", " + ne + ")")
-      val g = sc.randomGraph(nv, ne)
+      val g = SmallGraphs.randomGraph(nv, ne)
       val vct = g.vertices.count()
       val ect = g.edges.count()
       assert(vct == nv, "vct " + vct + " != nv " + nv)
       assert(ect == 2 * ne, "ect " + ect + " != 2ne " + (ne * 2))
     }
-
 
     1.to(80).foreach(i => {
       runOneDiGraphTest(10 * i)
