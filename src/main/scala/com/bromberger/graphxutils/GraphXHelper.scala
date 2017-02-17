@@ -199,7 +199,7 @@ object GraphXHelper {
 
     def allPairsShortestPaths(distFn: Edge[ED] => Double = _ => 1): RDD[(VertexId, Map[VertexId, NextHopsDist])] = {
       val initialMsg = Map(-1L -> NextHopsDist(Set.empty, -1L))
-      val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, NextHopsDist](vid -> NextHopsDist(Set(vid), 0L)))).reverse.partitionBy(PartitionStrategy.EdgePartition2D, numPartitions=128)
+      val pregelg = g.mapVertices((vid, vd) => (vd, Map[VertexId, NextHopsDist](vid -> NextHopsDist(Set(vid), 0L)))).reverse
 
       def vprog(v: VertexId, value: (VD, Map[VertexId, NextHopsDist]), message: Map[VertexId, NextHopsDist]): (VD, Map[VertexId, NextHopsDist]) = {
         val updatedValues = mergeMsg(value._2, message).filter(v => v._2.dist >= 0L)
